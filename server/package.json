@@ -1,0 +1,13 @@
+{
+  "name": "feishu-full-clipper-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "FEISHU_CLIPPER_NO_LISTEN=1 node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

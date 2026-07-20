@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "飞书剪存pro",
+  "version": "1.0.0",
+  "description": "一键将当前网页完整保存为飞书云文档和多维表格，需安装开源本机配套服务。",
+  "homepage_url": "https://github.com/lproc2006/feishu-clipper-pro",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "action": {
+    "default_title": "飞书剪存pro",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
