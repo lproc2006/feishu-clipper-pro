@@ -80,7 +80,7 @@ lark-cli auth status
 
 ### 开发者模式安装
 
-商店版本审核期间，可从 GitHub Release 下载 `feishu-clipper-pro-extension-1.0.1.zip` 并解压。
+商店版本审核期间，可从 GitHub Release 下载 `feishu-clipper-pro-extension-1.0.2.zip` 并解压。
 
 Chrome：打开 `chrome://extensions`，启用“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 `extension` 目录。
 

@@ -1,8 +1,13 @@
 # Changelog
 
+## 1.0.2 - 2026-07-22
+
+- Uses the unmodified official Feishu application icon as the locked master artwork.
+- Adds the product banner and clipping workflow screenshots to the GitHub introduction.
+
 ## 1.0.1 - 2026-07-22
 
-- Restores the enlarged Feishu app icon across the extension and store assets.
+- Restores the Feishu app icon across the extension and store assets.
 - Adds a canonical icon master and hash lock so accidental icon replacements fail the release build.
 
 ## 1.0.0 - 2026-07-20

@@ -1,9 +1,9 @@
 {
-  "branding/feishu-icon-master.png": "cf4dc6fa0f384df095bfbf2895875e0e91ccf611d04cdb481e511c89f021b60f",
-  "extension/icons/icon16.png": "5826c546e9a3dd280f61cc8149fb47372abc474faf624f56768d757016c794e6",
-  "extension/icons/icon32.png": "29a454fd14ad069271ce8abd423b750de369feeb36c392fea6e612f2b832ce8e",
-  "extension/icons/icon48.png": "92f9bbe4bda901dfb8623bcecb9d08742ce637597ddaf8625706ba2f0b902d38",
-  "extension/icons/icon128.png": "1d70a9a08b7e3408e22757fc7485125ac18276a293e02d3d6403fa12eacf6f13",
-  "store-listing/assets/icon-1024.png": "cf4dc6fa0f384df095bfbf2895875e0e91ccf611d04cdb481e511c89f021b60f",
-  "store-listing/assets/logo-300.png": "95da66ecefba18f7b7536460f94cd9179e76be818e6139013219403d2ba2e246"
+  "branding/feishu-icon-master.png": "41a1b460e85aa460e4d75f29d3c36fee2fe0f61389694ce97edef3955bd3d4ca",
+  "extension/icons/icon16.png": "33527538e8422ae3b6a9fd01f239b9f201a6e016144064181dfa056f9095e658",
+  "extension/icons/icon32.png": "b4aa3516c9945c30576f5b5900115a4d06578443cd74c10bc42e7928013a01ca",
+  "extension/icons/icon48.png": "dd1570d7d4af6829e8a9e76864c8ae188fd1d383a683742bf07c61acb6c70a08",
+  "extension/icons/icon128.png": "bd89340c03c7ea64beb13558ab73ad9f6feb951a793f78392d0fbf69f049c342",
+  "store-listing/assets/icon-1024.png": "41a1b460e85aa460e4d75f29d3c36fee2fe0f61389694ce97edef3955bd3d4ca",
+  "store-listing/assets/logo-300.png": "33fb963f70f2502ab4f76c59c1d4354db4c4e4f195af92d7a2bb9406bd5ecd83"
 }
