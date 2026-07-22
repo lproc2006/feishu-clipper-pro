@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_VERSION = "1.0.0";
+  const CONTENT_VERSION = "1.0.3";
   if (globalThis.__FEISHU_FULL_CLIPPER_LOADED__ === CONTENT_VERSION) return;
   globalThis.__FEISHU_FULL_CLIPPER_LOADED__ = CONTENT_VERSION;
 
@@ -360,7 +360,7 @@
         .filter(Boolean)
         .map((item) => String(item).toLowerCase());
       if (valueTypes.some((item) => articleTypes.has(item))) {
-        return nameOf(value.publisher) || nameOf(value.sourceOrganization) || nameOf(value.author);
+        return nameOf(value.publisher) || nameOf(value.sourceOrganization);
       }
       return value["@graph"] ? visit(value["@graph"]) : "";
     };
@@ -377,29 +377,126 @@
 
   function normalizePublisher(value) {
     const publisher = normalizeText(value)
-      .replace(/^(?:信息来源|文章来源|来源|发布单位|发布机构|作者)\s*[:：]\s*/, "")
+      .replace(
+        /^(?:发文机关|发布机关|制定机关|印发机关|信息来源|文章来源|来源|发布单位|发布机构)\s*[:：]?\s*/,
+        ""
+      )
       .replace(/\s+(?:编辑|审核|校对)\s*[丨|:：].*$/, "")
       .trim();
     return publisher.length <= 100 ? publisher : "";
   }
 
-  function readPublisher() {
+  function looksLikeOrganization(value) {
+    const text = normalizePublisher(value);
+    if (!text) return false;
+    return /(?:国务院|人民政府|人民法院|人民检察院|委员会|办公室|领导小组|指挥部|工作组|管理局|管理委员会|发展改革委|发展和改革委员会|厅|局|部|委|署|院|办|中心|研究所|研究院|大学|学院|公司|集团|协会|学会|联合会|商会|基金会|报社|通讯社|电视台|广播台|融媒体中心|新闻中心|出版社|杂志社|网站|政府网|新闻网|公众号)$/.test(
+      text
+    );
+  }
+
+  function isLikelyPersonName(value) {
+    const text = normalizePublisher(value);
+    return /^[\u4e00-\u9fff·]{2,4}$/.test(text) && !looksLikeOrganization(text);
+  }
+
+  function publisherAfterLabel(element) {
+    const ownText = normalizeText(element.textContent);
+    const labelMatch = ownText.match(
+      /^(?:发文机关|发布机关|制定机关|印发机关|发布单位|发布机构|信息来源|文章来源|来源)\s*[:：]?\s*(.*)$/
+    );
+    if (!labelMatch) return "";
+    if (labelMatch[1]) return normalizePublisher(labelMatch[1]);
+
+    const container = element.closest("td,th,dt,dd,h1,h2,h3,h4,h5,h6,p,span,div") || element;
+    const candidates = [
+      element.nextElementSibling,
+      container.nextElementSibling,
+      container.closest("td,th")?.nextElementSibling,
+      container.parentElement?.nextElementSibling
+    ];
+    for (const candidate of candidates) {
+      const text = normalizePublisher(candidate?.textContent);
+      if (!text || text.length > 100 || /^\d{4}[-/.年]/.test(text)) continue;
+      if (isLikelyPersonName(text)) continue;
+      return text;
+    }
+    return "";
+  }
+
+  function readVisiblePublisher() {
+    const labelPattern = /^(?:发文机关|发布机关|制定机关|印发机关|发布单位|发布机构|信息来源|文章来源|来源)\s*[:：]?/;
+    const priority = {
+      发文机关: 100,
+      发布机关: 95,
+      制定机关: 95,
+      印发机关: 95,
+      发布单位: 90,
+      发布机构: 90,
+      信息来源: 70,
+      文章来源: 65,
+      来源: 60
+    };
+    const candidates = [];
+    for (const element of document.querySelectorAll("b,strong,th,td,dt,dd,h1,h2,h3,h4,h5,h6,p,span,div")) {
+      if (element.closest("nav,header,footer,aside,[role='navigation'],[role='contentinfo']")) continue;
+      const text = normalizeText(element.textContent);
+      if (!labelPattern.test(text) || text.length > 140) continue;
+      const label = text.match(labelPattern)?.[0].replace(/[\s:：]/g, "") || "";
+      const publisher = publisherAfterLabel(element);
+      if (!publisher || isLikelyPersonName(publisher)) continue;
+      candidates.push({ publisher, score: priority[label] || 50 });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0]?.publisher || "";
+  }
+
+  function readPolicySignature() {
+    const candidates = [];
+    for (const element of document.querySelectorAll("p,td,div")) {
+      if (element.closest("nav,header,footer,aside,[role='navigation'],[role='contentinfo']")) continue;
+      if (element.querySelector("p,td,div")) continue;
+      const publisher = normalizePublisher(element.textContent);
+      if (!looksLikeOrganization(publisher) || publisher.length > 60 || /[:：]$/.test(publisher)) continue;
+
+      const nearby = [element.nextElementSibling, element.nextElementSibling?.nextElementSibling]
+        .map((item) => normalizeText(item?.textContent))
+        .join(" ");
+      const style = getComputedStyle(element);
+      let score = 0;
+      if (/(?:19|20)\d{2}年\d{1,2}月\d{1,2}日/.test(nearby)) score += 80;
+      if (style.textAlign === "right" || /右对齐/.test(element.getAttribute("label") || "")) score += 30;
+      if (score) candidates.push({ publisher, score });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0]?.publisher || "";
+  }
+
+  function publisherFromPolicyTitle(title) {
+    const text = normalizeText(title);
+    const match = text.match(/^(.{2,50}?)(?=关于|令|公告|通告|通知|决定|批复|意见|办法|规定)/);
+    const publisher = normalizePublisher(match?.[1]);
+    return looksLikeOrganization(publisher) ? publisher : "";
+  }
+
+  function readPublisher(title) {
+    const visible = readVisiblePublisher();
     const metadata = readMetaContent([
       "contentsource",
       "sourceorganization",
+      "source_organization",
+      "publisher",
+      "organization",
       "article:publisher",
       "og:article:publisher"
     ]);
     const account = document.querySelector("#js_name,.rich_media_meta_nickname")?.textContent;
     const structured = readStructuredPublisher();
-    const visible = [...document.querySelectorAll("[class*='source' i],p,span,div")]
-      .map((element) => normalizeText(element.textContent))
-      .find((text) => /^(?:信息来源|文章来源|来源|发布单位|发布机构)\s*[:：]/.test(text) && text.length <= 120);
-    const author = readMetaContent(["author", "article:author", "og:article:author"]);
+    const signature = readPolicySignature();
+    const titlePublisher = publisherFromPolicyTitle(title);
     const site = readMetaContent(["og:site_name", "application-name"]);
-    return [metadata, account, structured, visible, author, site]
+    return [visible, metadata, account, structured, signature, titlePublisher, site]
       .map(normalizePublisher)
-      .find(Boolean) || "未识别";
+      .find((publisher) => publisher && !isLikelyPersonName(publisher)) || "未识别";
   }
 
   function extractDateText(value) {
@@ -793,7 +890,7 @@
     const articleRoot = parsed.querySelector("article") || parsed.body;
     const title = chooseTitle(article, articleRoot);
     const publishedAt = readPublishedAt(title, article);
-    const publisher = readPublisher();
+    const publisher = readPublisher(title);
     const blocks = extractBlocks(articleRoot);
     const text = blocks
       .filter((block) => block.text && block.type !== "caption")
@@ -821,7 +918,7 @@
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "FEISHU_FULL_CLIP_EXTRACT_V4") return false;
+    if (!message || message.type !== "FEISHU_FULL_CLIP_EXTRACT_V5") return false;
     try {
       sendResponse(buildPayload());
     } catch (err) {
@@ -833,6 +930,7 @@
   globalThis.__FEISHU_FULL_CLIPPER_TEST__ = {
     buildPayload,
     prepareDocumentClone,
+    readPublisher,
     removeNavigationRuns
   };
 })();

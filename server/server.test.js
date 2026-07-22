@@ -9,6 +9,7 @@ const {
   docTokenFromUrl,
   evaluatePairState,
   extractRecordPage,
+  inferTags,
   isAllowedRequestOrigin,
   normalizePublishedAt,
   normalizeTitle,
@@ -32,6 +33,32 @@ test("article title is the single source for both destinations", () => {
     normalizeTitle({ articleTitle: "全国百佳，成功入选！", title: "错误的网站标题 - 某某网" }),
     "全国百佳，成功入选！"
   );
+});
+
+test("tags are content-specific, synchronized, and limited to three", () => {
+  const policyTags = inferTags({
+    articleTitle: "国务院关于《扩大消费“十五五”规划》的批复",
+    description: "原则同意扩大消费十五五规划，请认真组织实施。",
+    text: "深入实施提振消费专项行动，扩大服务消费，升级商品消费。"
+  });
+  assert.deepEqual(policyTags, ["扩大消费", "十五五规划"]);
+
+  const creditTags = inferTags({
+    articleTitle: "构建履约信用综合监管机制，持续优化营商环境",
+    text: "完善信用信息归集、信用监管和信用修复机制，持续优化营商环境。"
+  });
+  assert.deepEqual(creditTags, ["信用建设", "营商环境", "市场监管"]);
+  assert.ok(creditTags.length <= 3);
+  assert.equal(creditTags.includes("资料"), false);
+  assert.equal(creditTags.includes("工作"), false);
+
+  const aiTags = inferTags({
+    articleTitle: "生成式人工智能赋能政务服务场景创新",
+    text: "多地探索大模型在政务服务和行政审批中的应用，提升办事效率。"
+  });
+  assert.deepEqual(new Set(aiTags), new Set(["人工智能", "政务服务"]));
+  assert.notDeepEqual(aiTags, policyTags);
+  assert.notDeepEqual(aiTags, creditTags);
 });
 
 test("linked navigation cluster is removed while article blocks and image stay ordered", () => {

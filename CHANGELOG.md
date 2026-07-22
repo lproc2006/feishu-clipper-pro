@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3 - 2026-07-22
+
+- Prioritizes explicit issuing authorities such as `发文机关` over page authors.
+- Removes individual authors as a publisher fallback.
+- Adds policy signature and title-based organization fallbacks for government documents.
+- Forces open tabs to load the upgraded publisher extractor before the next clip.
+- Replaces generic fixed tags with title-weighted content topics and limits output to three tags.
+
 ## 1.0.2 - 2026-07-22
 
 - Uses the unmodified official Feishu application icon as the locked master artwork.

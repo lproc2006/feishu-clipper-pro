@@ -1,5 +1,5 @@
 const SERVER = "http://127.0.0.1:8787";
-const BUILD_VERSION = "1.0.2";
+const BUILD_VERSION = "1.0.3";
 
 if (chrome.runtime.getManifest().version !== BUILD_VERSION) {
   chrome.runtime.reload();
@@ -38,7 +38,7 @@ async function getActiveTab() {
 
 async function extractPage(tab) {
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V4" });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V5" });
     if (response?.error) throw new Error(response.error);
     return response;
   } catch (_err) {
@@ -46,7 +46,7 @@ async function extractPage(tab) {
       target: { tabId: tab.id },
       files: ["vendor/Readability.js", "content.js"]
     });
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V4" });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V5" });
     if (response?.error) throw new Error(response.error);
     return response;
   }

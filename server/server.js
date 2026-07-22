@@ -788,20 +788,103 @@ function cleanArticleText(payload) {
 }
 
 function inferTags(payload) {
-  const haystack = `${payload.title || ""}\n${payload.description || ""}\n${payload.text || ""}`;
+  const title = normalizeBlockText(payload.articleTitle || payload.title);
+  const description = normalizeBlockText(payload.description).slice(0, 1200);
+  const body = normalizeBlockText(payload.text).slice(0, 30000);
+  const candidates = new Map();
+  const genericTags = new Set(["政策", "资料", "工作", "技术", "文章", "报告", "研究", "分析"]);
+
+  const addCandidate = (tag, score, titleSignal = false) => {
+    const normalized = String(tag || "")
+      .replace(/[《》“”"'‘’（）()【】\[\]\s]/g, "")
+      .trim();
+    if (normalized.length < 2 || normalized.length > 10 || genericTags.has(normalized)) return;
+    const existing = candidates.get(normalized) || { tag: normalized, score: 0, titleSignal: false };
+    existing.score = Math.max(existing.score, score);
+    existing.titleSignal ||= titleSignal;
+    candidates.set(normalized, existing);
+  };
+
+  const countMatches = (text, pattern) => {
+    const flags = pattern.flags.includes("i") ? "gi" : "g";
+    return [...String(text || "").matchAll(new RegExp(pattern.source, flags))].length;
+  };
+
   const rules = [
-    ["政策", /政策|法规|条例|办法|国务院|政府|部门|通知|意见|营商环境/],
-    ["案例", /案例|经验|做法|实践|复制推广/],
-    ["技术", /技术|开发|代码|API|插件|浏览器|软件|系统/],
-    ["AI", /AI|人工智能|大模型|ChatGPT|Claude|Gemini|DeepSeek/],
-    ["飞书", /飞书|Lark|多维表格|云文档|Base|bitable/i],
-    ["工作", /项目|业务|客户|方案|汇报|培训|会议/],
-    ["资料", /资料|文章|报告|研究|分析|指南/]
+    ["营商环境", /营商环境|营商便利度|放管服/],
+    ["信用建设", /社会信用|信用体系|信用监管|信用修复|履约信用/],
+    ["扩大消费", /扩大消费|提振消费|促进消费|促消费/],
+    ["人工智能", /人工智能|生成式AI|大模型|ChatGPT|Claude|Gemini|DeepSeek/i],
+    ["数字经济", /数字经济|数字产业|产业数字化|数据要素/],
+    ["政务服务", /政务服务|一网通办|高效办成一件事|行政审批/],
+    ["市场监管", /市场监管|综合监管|公平竞争|反垄断/],
+    ["知识产权", /知识产权|专利|商标保护|版权保护/],
+    ["财政金融", /财政金融|金融支持|信贷投放|专项债|财政资金/],
+    ["税费服务", /税费服务|税收征管|减税降费|纳税缴费/],
+    ["就业促进", /就业优先|就业促进|稳岗扩岗|职业技能/],
+    ["社会保障", /社会保障|基本养老|医疗保险|失业保险|社会救助/],
+    ["养老托育", /养老服务|托育服务|银发经济|育儿补贴/],
+    ["医疗健康", /医疗健康|卫生健康|医疗服务|健康消费/],
+    ["教育培训", /教育培训|职业培训|教育资源|合作办学/],
+    ["文化旅游", /文化旅游|文旅|旅游消费|公共文化/],
+    ["交通物流", /交通物流|物流配送|交通运输|冷链物流/],
+    ["城乡建设", /城市更新|城乡建设|老旧小区|基础设施建设/],
+    ["乡村振兴", /乡村振兴|农村改革|农业农村|强农惠农/],
+    ["外贸开放", /对外开放|外贸|跨境电商|进出口|离境退税/],
+    ["企业服务", /企业服务|惠企服务|企业开办|市场主体|经营主体/]
   ];
-  const tags = rules.filter(([, pattern]) => pattern.test(haystack)).map(([tag]) => tag);
-  if (!tags.length) tags.push("待整理");
-  if (!tags.includes("资料")) tags.push("资料");
-  return [...new Set(tags)].slice(0, 5);
+
+  for (const [tag, pattern] of rules) {
+    const titleCount = countMatches(title, pattern);
+    const descriptionCount = countMatches(description, pattern);
+    const bodyCount = countMatches(body, pattern);
+    if (!titleCount && !descriptionCount && bodyCount < 2) continue;
+    addCandidate(
+      tag,
+      titleCount * 16 + descriptionCount * 6 + Math.min(bodyCount, 8),
+      titleCount > 0 || descriptionCount > 0
+    );
+  }
+
+  const planningPeriod = title.match(/(十四五|十五五|十六五).{0,4}(规划|纲要)/);
+  if (planningPeriod) addCandidate(`${planningPeriod[1]}规划`, 20, true);
+
+  for (const match of title.matchAll(/《([^》]{2,40})》/g)) {
+    const phrase = match[1]
+      .replace(/(?:十四五|十五五|十六五)/g, "")
+      .replace(/(?:总体)?(?:规划|纲要|方案|意见|办法|规定|通知|批复|报告)$/g, "")
+      .replace(/[“”"'‘’（）()\s]/g, "")
+      .trim();
+    addCandidate(phrase, 22, true);
+  }
+
+  if (![...candidates.values()].some((item) => item.titleSignal)) {
+    const actionPhrase = title.match(/(?:推动|促进|加强|提升|优化|构建|完善|深化)([\u4e00-\u9fff]{2,8})/);
+    if (actionPhrase) addCandidate(actionPhrase[1], 18, true);
+  }
+
+  let ranked = [...candidates.values()];
+  const titleSpecific = ranked.filter((item) => item.titleSignal);
+  if (titleSpecific.length >= 2) ranked = titleSpecific;
+  ranked.sort((a, b) => b.score - a.score || a.tag.length - b.tag.length);
+
+  const tags = [];
+  for (const candidate of ranked) {
+    if (tags.some((tag) => tag.includes(candidate.tag) || candidate.tag.includes(tag))) continue;
+    tags.push(candidate.tag);
+    if (tags.length === 3) break;
+  }
+
+  if (!tags.length) {
+    const fallback = title
+      .replace(/^.{2,40}?(?:关于|印发)/, "")
+      .replace(/(?:通知|意见|办法|规定|方案|报告|公告|通告|批复)$/g, "")
+      .replace(/[《》“”"'‘’（）()\s]/g, "")
+      .trim();
+    if (fallback.length >= 2 && fallback.length <= 10) tags.push(fallback);
+  }
+
+  return tags.length ? tags.slice(0, 3) : ["待整理"];
 }
 
 function formatShanghaiDate(date = new Date()) {
@@ -1559,6 +1642,7 @@ export {
   evaluatePairState,
   extractRecordPage,
   getDocStates,
+  inferTags,
   isAllowedRequestOrigin,
   isNoiseLine,
   normalizePublishedAt,
