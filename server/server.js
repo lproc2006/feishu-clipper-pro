@@ -28,6 +28,7 @@ const STATE_FILE =
 let workspaceCache = null;
 let pairRegistry = null;
 let registryQueue = Promise.resolve();
+let tagOptionQueue = Promise.resolve();
 let syncInFlight = null;
 
 function runLark(args, input) {
@@ -314,6 +315,103 @@ function extractBaseFields(result) {
   if (Array.isArray(result?.fields)) return result.fields;
   if (Array.isArray(result?.data?.data?.fields)) return result.data.data.fields;
   return [];
+}
+
+const TAG_OPTION_HUES = [
+  "Blue",
+  "Green",
+  "Wathet",
+  "Orange",
+  "Purple",
+  "Turquoise",
+  "Carmine",
+  "Lime"
+];
+
+function tagOptionHue(name) {
+  let hash = 0;
+  for (const character of String(name || "")) {
+    hash = (hash * 31 + character.codePointAt(0)) >>> 0;
+  }
+  return TAG_OPTION_HUES[hash % TAG_OPTION_HUES.length];
+}
+
+function mergeTagOptions(field, tags) {
+  const options = [];
+  const names = new Set();
+  const add = (value, fallbackHue) => {
+    const name = normalizeBlockText(typeof value === "string" ? value : value?.name);
+    if (!name || names.has(name)) return;
+    names.add(name);
+    options.push({
+      name,
+      hue: typeof value === "object" && value?.hue ? value.hue : fallbackHue || tagOptionHue(name),
+      lightness:
+        typeof value === "object" && value?.lightness ? value.lightness : "Lighter"
+    });
+  };
+
+  for (const option of field?.options || []) add(option);
+  for (const tag of tags || []) add(tag, tagOptionHue(tag));
+
+  const originalNames = (field?.options || [])
+    .map((option) => normalizeBlockText(option?.name))
+    .filter(Boolean);
+  const changed =
+    originalNames.length !== options.length ||
+    options.some((option, index) => option.name !== originalNames[index]);
+  return { changed, options };
+}
+
+async function ensureTagOptionsOnce(base, tags) {
+  const listed = await runLark([
+    "base",
+    "+field-list",
+    "--base-token",
+    base.token,
+    "--table-id",
+    base.tableId,
+    "--as",
+    "user",
+    "--format",
+    "json"
+  ]);
+  const tagField = extractBaseFields(listed).find((field) => field.name === "标签");
+  if (!tagField || tagField.type !== "select" || tagField.multiple !== true) {
+    throw new Error("多维表格中的“标签”字段必须是多选类型");
+  }
+
+  const merged = mergeTagOptions(tagField, tags);
+  if (!merged.changed) return;
+  await runLark([
+    "base",
+    "+field-update",
+    "--base-token",
+    base.token,
+    "--table-id",
+    base.tableId,
+    "--field-id",
+    tagField.id || tagField.field_id || tagField.name,
+    "--json",
+    JSON.stringify({
+      name: "标签",
+      type: "select",
+      multiple: true,
+      options: merged.options,
+      description: "根据剪存内容自动提取的主题标签，最多三个"
+    }),
+    "--yes",
+    "--as",
+    "user",
+    "--format",
+    "json"
+  ]);
+}
+
+function ensureTagOptions(base, tags) {
+  const queued = tagOptionQueue.then(() => ensureTagOptionsOnce(base, tags));
+  tagOptionQueue = queued.catch(() => {});
+  return queued;
 }
 
 async function ensureBaseSchema(baseToken, tableId) {
@@ -1487,6 +1585,7 @@ async function handleClip(payload) {
   const body = blocksToPlainText(blocks);
   const tags = inferTags(payload);
   const metadata = buildClipMetadata(payload, tags);
+  await ensureTagOptions(workspace.base, metadata.tags);
   const doc = await createDoc(workspace.folder.token, title, blocks, metadata);
   let record;
   try {
@@ -1645,6 +1744,7 @@ export {
   inferTags,
   isAllowedRequestOrigin,
   isNoiseLine,
+  mergeTagOptions,
   normalizePublishedAt,
   normalizeTitle,
   recordExistsFromGet,

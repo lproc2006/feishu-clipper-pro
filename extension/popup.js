@@ -1,5 +1,5 @@
 const SERVER = "http://127.0.0.1:8787";
-const BUILD_VERSION = "1.0.3";
+const BUILD_VERSION = "1.0.4";
 
 if (chrome.runtime.getManifest().version !== BUILD_VERSION) {
   chrome.runtime.reload();

@@ -11,6 +11,7 @@ const {
   extractRecordPage,
   inferTags,
   isAllowedRequestOrigin,
+  mergeTagOptions,
   normalizePublishedAt,
   normalizeTitle,
   recordExistsFromGet
@@ -59,6 +60,26 @@ test("tags are content-specific, synchronized, and limited to three", () => {
   assert.deepEqual(new Set(aiTags), new Set(["人工智能", "政务服务"]));
   assert.notDeepEqual(aiTags, policyTags);
   assert.notDeepEqual(aiTags, creditTags);
+});
+
+test("tag options are deduplicated and missing content tags are added", () => {
+  const merged = mergeTagOptions(
+    {
+      options: [
+        { name: "营商环境", hue: "Green", lightness: "Lighter" },
+        { name: "企业服务", hue: "Orange", lightness: "Lighter" },
+        { name: "营商环境", hue: "Blue", lightness: "Dark" }
+      ]
+    },
+    ["扩大消费", "十五五规划", "营商环境"]
+  );
+
+  assert.equal(merged.changed, true);
+  assert.deepEqual(
+    merged.options.map((option) => option.name),
+    ["营商环境", "企业服务", "扩大消费", "十五五规划"]
+  );
+  assert.equal(new Set(merged.options.map((option) => option.name)).size, merged.options.length);
 });
 
 test("linked navigation cluster is removed while article blocks and image stay ordered", () => {

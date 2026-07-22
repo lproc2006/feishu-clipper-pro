@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-07-22
+
+- Creates missing Base select options before saving newly inferred content tags.
+- Deduplicates existing tag options while preserving their names and colors.
+- Serializes tag option updates so simultaneous clips cannot overwrite each other's options.
+- Moves tag preparation before document creation to avoid temporary documents on option failures.
+
 ## 1.0.3 - 2026-07-22
 
 - Prioritizes explicit issuing authorities such as `发文机关` over page authors.
