@@ -8,7 +8,7 @@ Archive the current web article, after an explicit user click, into the user's o
 
 ## Data categories handled
 
-- Website content: yes. Article title, URL, text, image references, table structure, publication date, and publisher are required for the clipping feature.
+- Website content: yes. Article title, URL, text, image data, table structure, publication date, publisher, generated summary, and tags are required for the clipping feature.
 - Web history: no. The extension does not read or store browsing history.
 - Authentication information: no. Authentication is handled separately by the official lark-cli on the user's device.
 - Personally identifiable information: not intentionally collected. If the selected page contains such information, it is processed only as part of the user-requested clipping operation.
@@ -19,6 +19,7 @@ Archive the current web article, after an explicit user click, into the user's o
 
 - Processing begins only after the user opens the extension and clicks Full Clip.
 - Data is sent to `127.0.0.1` on the user's device.
+- AI processing uses local Ollama by default. A remote OpenAI-compatible provider is used only when the user explicitly configures one in the companion environment.
 - The companion sends it through the official lark-cli to the user's own Feishu or Lark workspace.
 - No data is sent to or accessible by the extension developer.
 - No advertising, sale, profiling, analytics, or unrelated use occurs.

@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_VERSION = "1.0.3";
+  const CONTENT_VERSION = "1.0.5";
   if (globalThis.__FEISHU_FULL_CLIPPER_LOADED__ === CONTENT_VERSION) return;
   globalThis.__FEISHU_FULL_CLIPPER_LOADED__ = CONTENT_VERSION;
 
@@ -8,6 +8,8 @@
   const MAX_IMAGES = 60;
   const MAX_TABLE_ROWS = 200;
   const MAX_TABLE_COLUMNS = 30;
+  const MAX_CAPTURED_IMAGE_BYTES = 24 * 1024 * 1024;
+  const MAX_SINGLE_IMAGE_BYTES = 8 * 1024 * 1024;
 
   function normalizeText(value) {
     return String(value || "")
@@ -375,6 +377,44 @@
     return "";
   }
 
+  function readEmbeddedPublisher() {
+    const keys = [
+      "accountName",
+      "account_name",
+      "authorName",
+      "author_name",
+      "mediaName",
+      "media_name",
+      "publisherName",
+      "publisher_name",
+      "sourceName",
+      "source_name"
+    ];
+    const keyPattern = keys.join("|");
+    const quoted = new RegExp(
+      `["'](?:${keyPattern})["']\\s*:\\s*["']([^"'\\n]{2,100})["']`,
+      "i"
+    );
+    const assigned = new RegExp(
+      `(?:${keyPattern})\\s*[:=]\\s*["']([^"'\\n]{2,100})["']`,
+      "i"
+    );
+    for (const script of document.querySelectorAll("script:not([src])")) {
+      const source = (script.textContent || "").slice(0, 2_000_000);
+      if (!source || !new RegExp(keyPattern, "i").test(source)) continue;
+      const match = source.match(quoted) || source.match(assigned);
+      if (match?.[1]) {
+        return normalizeText(
+          match[1].replace(
+            /\\u([0-9a-f]{4})/gi,
+            (_all, hex) => String.fromCharCode(parseInt(hex, 16))
+          )
+        );
+      }
+    }
+    return "";
+  }
+
   function normalizePublisher(value) {
     const publisher = normalizeText(value)
       .replace(
@@ -397,6 +437,41 @@
   function isLikelyPersonName(value) {
     const text = normalizePublisher(value);
     return /^[\u4e00-\u9fff·]{2,4}$/.test(text) && !looksLikeOrganization(text);
+  }
+
+  function isPlatformPublisher(value) {
+    const text = normalizePublisher(value).replace(/\s+/g, "");
+    return /^(?:百度|百家号|百度百家号|微信|微信公众号|今日头条|头条号|搜狐|搜狐号|网易|新浪|微博)$/.test(text);
+  }
+
+  function readAccountPublisher() {
+    const selectors = [
+      "#js_name",
+      ".rich_media_meta_nickname",
+      "[class*='authorName']",
+      "[class*='author-name']",
+      "[class*='accountName']",
+      "[class*='account-name']",
+      "[class*='mediaName']",
+      "[class*='media-name']",
+      "[data-testid*='author']",
+      "a[href*='app_id']",
+      "a[href*='author']"
+    ];
+    const candidates = [];
+    for (const element of document.querySelectorAll(selectors.join(","))) {
+      if (element.closest("nav,footer,[role='navigation'],[role='contentinfo']")) continue;
+      const text = normalizePublisher(element.textContent || element.getAttribute("title"));
+      if (!text || text.length > 60 || isPlatformPublisher(text)) continue;
+      if (/^(?:关注|作者|账号|主页|打开|查看|发布于|来源)$/.test(text)) continue;
+      const identity = `${element.id || ""} ${element.className || ""} ${element.getAttribute("href") || ""}`;
+      let score = 40;
+      if (/account|authorname|author-name|medianame|media-name|app_id/i.test(identity)) score += 40;
+      if (looksLikeOrganization(text)) score += 15;
+      candidates.push({ text, score });
+    }
+    candidates.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+    return candidates[0]?.text || "";
   }
 
   function publisherAfterLabel(element) {
@@ -482,21 +557,40 @@
     const visible = readVisiblePublisher();
     const metadata = readMetaContent([
       "contentsource",
+      "content-source",
       "sourceorganization",
       "source_organization",
       "publisher",
       "organization",
       "article:publisher",
-      "og:article:publisher"
+      "og:article:publisher",
+      "article:author",
+      "author",
+      "byl"
     ]);
-    const account = document.querySelector("#js_name,.rich_media_meta_nickname")?.textContent;
+    const account = readAccountPublisher();
     const structured = readStructuredPublisher();
+    const embedded = readEmbeddedPublisher();
     const signature = readPolicySignature();
     const titlePublisher = publisherFromPolicyTitle(title);
     const site = readMetaContent(["og:site_name", "application-name"]);
-    return [visible, metadata, account, structured, signature, titlePublisher, site]
-      .map(normalizePublisher)
-      .find((publisher) => publisher && !isLikelyPersonName(publisher)) || "未识别";
+    const candidates = [
+      { value: visible, allowPerson: false },
+      { value: account, allowPerson: true },
+      { value: metadata, allowPerson: location.hostname === "baijiahao.baidu.com" },
+      { value: structured, allowPerson: false },
+      { value: embedded, allowPerson: location.hostname === "baijiahao.baidu.com" },
+      { value: signature, allowPerson: false },
+      { value: titlePublisher, allowPerson: false },
+      { value: site, allowPerson: false }
+    ];
+    for (const candidate of candidates) {
+      const publisher = normalizePublisher(candidate.value);
+      if (!publisher || isPlatformPublisher(publisher)) continue;
+      if (!candidate.allowPerson && isLikelyPersonName(publisher)) continue;
+      return publisher;
+    }
+    return "未识别";
   }
 
   function extractDateText(value) {
@@ -884,7 +978,52 @@
     });
   }
 
-  function buildPayload() {
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("图片读取失败"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function attachImageData(blocks) {
+    let capturedBytes = 0;
+    const images = blocks.filter((block) => block.type === "image");
+    let nextIndex = 0;
+    const captureNext = async () => {
+      while (nextIndex < images.length && capturedBytes < MAX_CAPTURED_IMAGE_BYTES) {
+        const block = images[nextIndex];
+        nextIndex += 1;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        try {
+          const response = await fetch(block.src, {
+            credentials: "include",
+            cache: "force-cache",
+            referrer: location.href,
+            signal: controller.signal
+          });
+          if (!response.ok) continue;
+          const contentLength = Number(response.headers.get("content-length") || 0);
+          if (contentLength > MAX_SINGLE_IMAGE_BYTES) continue;
+          const blob = await response.blob();
+          if (!blob.type.startsWith("image/") || blob.size > MAX_SINGLE_IMAGE_BYTES) continue;
+          if (capturedBytes + blob.size > MAX_CAPTURED_IMAGE_BYTES) continue;
+          block.dataUrl = await blobToDataUrl(blob);
+          capturedBytes += blob.size;
+        } catch (_err) {
+          // The original URL remains available as a fallback for public images.
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, images.length) }, captureNext));
+    return blocks;
+  }
+
+  async function buildPayload() {
     const article = parseReadableArticle();
     const parsed = new DOMParser().parseFromString(`<article>${article.content || ""}</article>`, "text/html");
     const articleRoot = parsed.querySelector("article") || parsed.body;
@@ -892,6 +1031,7 @@
     const publishedAt = readPublishedAt(title, article);
     const publisher = readPublisher(title);
     const blocks = extractBlocks(articleRoot);
+    await attachImageData(blocks);
     const text = blocks
       .filter((block) => block.text && block.type !== "caption")
       .map((block) => block.text)
@@ -919,16 +1059,15 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type !== "FEISHU_FULL_CLIP_EXTRACT_V5") return false;
-    try {
-      sendResponse(buildPayload());
-    } catch (err) {
-      sendResponse({ error: err.message || "网页正文提取失败" });
-    }
+    buildPayload()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ error: err.message || "网页正文提取失败" }));
     return true;
   });
 
   globalThis.__FEISHU_FULL_CLIPPER_TEST__ = {
     buildPayload,
+    attachImageData,
     prepareDocumentClone,
     readPublisher,
     removeNavigationRuns

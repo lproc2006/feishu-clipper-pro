@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { URL } from "node:url";
 
@@ -12,6 +13,9 @@ const BASE_NAME = process.env.FEISHU_CLIPPER_BASE || "网页剪存库";
 const TABLE_NAME = process.env.FEISHU_CLIPPER_TABLE || "剪存记录";
 const TIME_ZONE = "Asia/Shanghai";
 const SYNC_CONFIRMATIONS = 1;
+const AI_TIMEOUT_MS = Math.max(5_000, Number(process.env.FEISHU_CLIPPER_AI_TIMEOUT_MS || 45_000));
+const OLLAMA_URL = String(process.env.FEISHU_CLIPPER_OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
+const AI_PROVIDER = String(process.env.FEISHU_CLIPPER_AI_PROVIDER || "ollama").toLowerCase();
 const SYNC_INTERVAL_MS = Math.max(
   10_000,
   Number(process.env.FEISHU_CLIPPER_SYNC_INTERVAL_MS || 15_000)
@@ -30,12 +34,14 @@ let pairRegistry = null;
 let registryQueue = Promise.resolve();
 let tagOptionQueue = Promise.resolve();
 let syncInFlight = null;
+let ollamaModelCache = null;
 
-function runLark(args, input) {
+function runLark(args, input, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("lark-cli", args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
+      env: process.env,
+      ...(options.cwd ? { cwd: options.cwd } : {})
     });
 
     let stdout = "";
@@ -57,7 +63,17 @@ function runLark(args, input) {
         return;
       }
       try {
-        resolve(stdout.trim() ? JSON.parse(stdout) : {});
+        const output = stdout.trim();
+        if (!output) {
+          resolve({});
+          return;
+        }
+        try {
+          resolve(JSON.parse(output));
+        } catch (_err) {
+          const jsonStart = output.indexOf("{");
+          resolve(JSON.parse(jsonStart >= 0 ? output.slice(jsonStart) : output));
+        }
       } catch (err) {
         reject(new Error(`Cannot parse lark-cli JSON: ${err.message}\n${stdout}`));
       }
@@ -398,7 +414,7 @@ async function ensureTagOptionsOnce(base, tags) {
       type: "select",
       multiple: true,
       options: merged.options,
-      description: "根据剪存内容自动提取的主题标签，最多三个"
+      description: "根据剪存内容自动提取的重点主题标签，2至5个"
     }),
     "--yes",
     "--as",
@@ -698,6 +714,13 @@ function safeHttpUrl(value) {
   }
 }
 
+function normalizeImageDataUrl(value) {
+  const raw = String(value || "");
+  const match = raw.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match || match[2].length > 12_000_000) return "";
+  return `data:${match[1].toLowerCase()};base64,${match[2]}`;
+}
+
 function isSeparatorLine(value) {
   return /^[|｜>》/·•\-–—\s]+$/.test(normalizeBlockText(value));
 }
@@ -814,6 +837,7 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
     if (type === "image") {
       const src = safeHttpUrl(source.src);
       if (!src) continue;
+      const dataUrl = normalizeImageDataUrl(source.dataUrl);
       const width = Number(source.width || 0);
       const height = Number(source.height || 0);
       if (width > 0 && height > 0 && (width < 120 || height < 80)) continue;
@@ -822,7 +846,8 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
         src,
         alt: normalizeBlockText(source.alt),
         width,
-        height
+        height,
+        ...(dataUrl ? { dataUrl } : {})
       });
       continue;
     }
@@ -970,7 +995,7 @@ function inferTags(payload) {
   for (const candidate of ranked) {
     if (tags.some((tag) => tag.includes(candidate.tag) || candidate.tag.includes(tag))) continue;
     tags.push(candidate.tag);
-    if (tags.length === 3) break;
+    if (tags.length === 5) break;
   }
 
   if (!tags.length) {
@@ -982,7 +1007,179 @@ function inferTags(payload) {
     if (fallback.length >= 2 && fallback.length <= 10) tags.push(fallback);
   }
 
-  return tags.length ? tags.slice(0, 3) : ["待整理"];
+  return tags.length ? tags.slice(0, 5) : ["待整理"];
+}
+
+function fallbackSummary(title, body) {
+  const source = normalizeBlockText(body);
+  const sentences = source
+    .split(/(?<=[。！？!?；;])\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const selected = [];
+  let length = 0;
+  for (const sentence of sentences) {
+    if (length >= 160 || selected.length >= 3) break;
+    selected.push(sentence);
+    length += sentence.length;
+  }
+  return truncate(selected.join("") || normalizeBlockText(title), 220);
+}
+
+function normalizeAiTag(value) {
+  const genericTags = new Set([
+    "政策",
+    "资料",
+    "工作",
+    "技术",
+    "文章",
+    "报告",
+    "研究",
+    "分析",
+    "新闻",
+    "待整理"
+  ]);
+  const tag = String(value || "")
+    .replace(/^[#＃]+/, "")
+    .replace(/[《》“”"'‘’（）()【】\[\]，,。；;：:\s]/g, "")
+    .trim();
+  if (tag.length < 2 || tag.length > 10 || genericTags.has(tag)) return "";
+  return tag;
+}
+
+function supplementalTags(payload) {
+  const text = `${normalizeTitle(payload)}\n${normalizeBlockText(payload.text || payload.description)}`;
+  const rules = [
+    ["公共就业服务", /公共就业|就业公共服务|就业服务地图/],
+    ["就业服务地图", /就业.{0,4}地图|服务地图/],
+    ["人才服务", /人才服务|人才招聘|人力资源服务/],
+    ["劳动保障", /劳动保障|劳动关系|劳动监察|劳动合同/],
+    ["政策解读", /政策解读|答记者问|图解|权威解读/],
+    ["产业发展", /产业发展|产业升级|产业链|产业集群/],
+    ["科技创新", /科技创新|科技成果|创新驱动|研发投入/],
+    ["公共服务", /公共服务|便民服务|服务平台/],
+    ["数据发布", /数据发布|统计数据|调查数据|监测数据/]
+  ];
+  return rules.filter(([, pattern]) => pattern.test(text)).map(([tag]) => tag);
+}
+
+function normalizeAiEnrichment(value, payload, body) {
+  const summary = truncate(normalizeBlockText(value?.summary), 220) || fallbackSummary(normalizeTitle(payload), body);
+  const tags = [];
+  const add = (valueToAdd) => {
+    const tag = normalizeAiTag(valueToAdd);
+    if (!tag || tags.some((item) => item === tag || item.includes(tag) || tag.includes(item))) return;
+    tags.push(tag);
+  };
+  for (const tag of Array.isArray(value?.tags) ? value.tags : []) add(tag);
+  for (const tag of inferTags(payload)) add(tag);
+  for (const tag of supplementalTags(payload)) add(tag);
+
+  if (tags.length < 2) {
+    const titleTag = normalizeTitle(payload)
+      .replace(/(?:发布|印发|通知|公告|通告|办法|意见|方案|报告|解读)$/g, "")
+      .replace(/[《》“”"'‘’（）()【】\[\]\s]/g, "")
+      .slice(0, 10);
+    add(titleTag);
+  }
+  if (tags.length < 2) add("待人工复核");
+  return { summary, tags: tags.slice(0, 5), source: value?.source || "fallback" };
+}
+
+async function fetchJsonWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`AI 服务返回 ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseAiJson(value) {
+  if (value && typeof value === "object") return value;
+  const text = String(value || "").replace(/^```(?:json)?\s*|\s*```$/gi, "").trim();
+  try {
+    return JSON.parse(text);
+  } catch (_err) {
+    const match = text.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : {};
+  }
+}
+
+function aiPrompt(payload, body) {
+  return [
+    "你是中文网页归档编辑。请仅返回 JSON，不要解释。",
+    "任务：用一段话准确概括正文，并提取 2 至 5 个突出核心对象、政策主题或业务事项的标签。",
+    "要求：摘要 80 至 180 个汉字；标签每个 2 至 10 个汉字；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化标签；不要把网站名当标签。",
+    '返回格式：{"summary":"...","tags":["...","..."]}',
+    `标题：${normalizeTitle(payload)}`,
+    `发布单位：${normalizeBlockText(payload.publisher) || "未识别"}`,
+    `正文：${truncate(body, 8000)}`
+  ].join("\n");
+}
+
+async function getOllamaModel() {
+  if (ollamaModelCache) return ollamaModelCache;
+  if (process.env.FEISHU_CLIPPER_AI_MODEL) {
+    ollamaModelCache = process.env.FEISHU_CLIPPER_AI_MODEL;
+    return ollamaModelCache;
+  }
+  const result = await fetchJsonWithTimeout(`${OLLAMA_URL}/api/tags`);
+  ollamaModelCache = result?.models?.[0]?.name || "";
+  if (!ollamaModelCache) throw new Error("Ollama 未安装可用模型");
+  return ollamaModelCache;
+}
+
+async function requestOllamaEnrichment(payload, body) {
+  const model = await getOllamaModel();
+  const result = await fetchJsonWithTimeout(`${OLLAMA_URL}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      prompt: aiPrompt(payload, body),
+      stream: false,
+      format: "json",
+      think: false,
+      options: { temperature: 0.15, num_predict: 420 }
+    })
+  });
+  return { ...parseAiJson(result?.response), source: "ollama" };
+}
+
+async function requestOpenAiEnrichment(payload, body) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("未配置 OPENAI_API_KEY");
+  const baseUrl = String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+  const model = process.env.FEISHU_CLIPPER_AI_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const result = await fetchJsonWithTimeout(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      temperature: 0.15,
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: aiPrompt(payload, body) }]
+    })
+  });
+  return { ...parseAiJson(result?.choices?.[0]?.message?.content), source: "openai" };
+}
+
+async function enrichContent(payload, body) {
+  try {
+    const value = AI_PROVIDER === "openai"
+      ? await requestOpenAiEnrichment(payload, body)
+      : AI_PROVIDER === "none"
+        ? {}
+        : await requestOllamaEnrichment(payload, body);
+    return normalizeAiEnrichment(value, payload, body);
+  } catch (err) {
+    console.error(`AI 摘要失败，已使用本地规则：${err.message}`);
+    return normalizeAiEnrichment({}, payload, body);
+  }
 }
 
 function formatShanghaiDate(date = new Date()) {
@@ -1063,7 +1260,7 @@ function imageName(block) {
   }
 }
 
-function buildClipMetadata(payload, tags) {
+function buildClipMetadata(payload, tags, summary = "") {
   const sourceUrl = safeHttpUrl(payload.url);
   const publication = normalizePublishedAt(payload.publishedAt);
   const publisher = truncate(String(payload.publisher || "").replace(/\s+/g, " ").trim(), 100) || "未识别";
@@ -1072,8 +1269,38 @@ function buildClipMetadata(payload, tags) {
     tags: [...new Set(tags || [])],
     publishedAt: publication.value,
     publishedDisplay: publication.display,
-    publisher
+    publisher,
+    summary: truncate(normalizeBlockText(summary), 220)
   };
+}
+
+function prepareEmbeddedImages(blocks) {
+  const assets = [];
+  const preparedBlocks = blocks.map((block, index) => {
+    if (block.type !== "image" || !block.dataUrl) return block;
+    const match = block.dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,(.+)$/i);
+    if (!match) return block;
+    try {
+      const buffer = Buffer.from(match[2], "base64");
+      if (!buffer.length || buffer.length > 8 * 1024 * 1024) return block;
+      const extension = match[1].split("/")[1].replace("jpeg", "jpg");
+      const placeholder = `FEISHU_CLIPPER_IMAGE_${randomUUID().replace(/-/g, "")}`;
+      assets.push({
+        buffer,
+        fileName: `image-${String(index + 1).padStart(3, "0")}.${extension}`,
+        placeholder,
+        width: Math.round(Number(block.width || 0)),
+        height: Math.round(Number(block.height || 0))
+      });
+      return {
+        ...block,
+        placeholder
+      };
+    } catch (_err) {
+      return block;
+    }
+  });
+  return { blocks: preparedBlocks, assets };
 }
 
 function tableCellXml(cell) {
@@ -1121,6 +1348,7 @@ function buildDocXml(title, blocks, metadata = {}) {
   const tagText = Array.isArray(metadata.tags) && metadata.tags.length ? metadata.tags.join("、") : "无";
   const publishedDisplay = metadata.publishedDisplay || "未识别";
   const publisher = metadata.publisher || "未识别";
+  const summary = normalizeBlockText(metadata.summary);
   const content = [
     `<title>${escapeXml(title)}</title>`,
     '<callout background-color="light-blue" border-color="blue">',
@@ -1130,6 +1358,7 @@ function buildDocXml(title, blocks, metadata = {}) {
       ? `<p><b>原网页链接：</b><a href="${escapeXmlAttribute(sourceUrl)}">${escapeXml(sourceUrl)}</a></p>`
       : "<p><b>原网页链接：</b>未识别</p>",
     `<p><b>标签：</b>${escapeXml(tagText)}</p>`,
+    summary ? `<p><b>内容摘要：</b>${escapeXml(summary)}</p>` : "",
     "</callout>",
     "<hr/>"
   ];
@@ -1156,9 +1385,13 @@ function buildDocXml(title, blocks, metadata = {}) {
     flushList();
 
     if (block.type === "image") {
-      content.push(
-        `<img href="${escapeXmlAttribute(block.src)}" name="${escapeXmlAttribute(imageName(block))}"/>`
-      );
+      if (block.placeholder) {
+        content.push(`<p>${escapeXml(block.placeholder)}</p>`);
+      } else {
+        content.push(
+          `<img href="${escapeXmlAttribute(block.src)}" name="${escapeXmlAttribute(imageName(block))}"/>`
+        );
+      }
     } else if (block.type === "table") {
       const table = tableToDocXml(block);
       if (table) content.push(table);
@@ -1180,8 +1413,78 @@ function buildDocXml(title, blocks, metadata = {}) {
   return content.join("\n");
 }
 
+function documentContentFromResult(result) {
+  return String(result?.data?.document?.content || result?.document?.content || "");
+}
+
+function placeholderBlockId(content, placeholder) {
+  const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return content.match(new RegExp(`<p\\s+id="([^"]+)"[^>]*>\\s*${escaped}\\s*</p>`))?.[1] || "";
+}
+
+async function insertEmbeddedImages(docToken, assets) {
+  if (!assets.length) return;
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "feishu-clipper-"));
+  try {
+    for (const asset of assets) {
+      await writeFile(join(temporaryDirectory, asset.fileName), asset.buffer, { mode: 0o600 });
+      const mediaArgs = [
+        "docs",
+        "+media-insert",
+        "--doc",
+        docToken,
+        "--file",
+        `./${asset.fileName}`,
+        "--selection-with-ellipsis",
+        asset.placeholder,
+        "--before"
+      ];
+      if (asset.width > 0) mediaArgs.push("--width", String(asset.width));
+      if (asset.height > 0) mediaArgs.push("--height", String(asset.height));
+      mediaArgs.push("--as", "user", "--format", "json");
+      await runLark(mediaArgs, undefined, { cwd: temporaryDirectory });
+
+      const located = await runLark([
+        "docs",
+        "+fetch",
+        "--doc",
+        docToken,
+        "--scope",
+        "keyword",
+        "--keyword",
+        asset.placeholder,
+        "--detail",
+        "with-ids",
+        "--as",
+        "user",
+        "--format",
+        "json"
+      ]);
+      const blockId = placeholderBlockId(documentContentFromResult(located), asset.placeholder);
+      if (!blockId) throw new Error("插入图片后未能定位临时占位块");
+      await runLark([
+        "docs",
+        "+update",
+        "--doc",
+        docToken,
+        "--command",
+        "block_delete",
+        "--block-id",
+        blockId,
+        "--as",
+        "user",
+        "--format",
+        "json"
+      ]);
+    }
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
 async function createDoc(folderToken, title, blocks, metadata) {
-  const content = buildDocXml(title, blocks, metadata);
+  const preparedImages = prepareEmbeddedImages(blocks);
+  const content = buildDocXml(title, preparedImages.blocks, metadata);
   const created = await runLark([
     "docs",
     "+create",
@@ -1200,10 +1503,17 @@ async function createDoc(folderToken, title, blocks, metadata) {
   ]);
 
   const doc = findDeep(created, (item) => Boolean(item.document_id || item.url)) || created.data?.document || created.data || created;
-  return {
+  const normalized = {
     token: doc.document_id || extractToken(doc),
     url: extractUrl(doc)
   };
+  try {
+    await insertEmbeddedImages(normalized.token, preparedImages.assets);
+  } catch (err) {
+    if (normalized.token) await deleteClipDoc(normalized.token).catch(() => {});
+    throw err;
+  }
+  return normalized;
 }
 
 async function createRecord(base, doc, title, body, metadata) {
@@ -1583,13 +1893,14 @@ async function handleClip(payload) {
   const title = normalizeTitle(payload);
   const blocks = cleanArticleBlocks(payload, title);
   const body = blocksToPlainText(blocks);
-  const tags = inferTags(payload);
-  const metadata = buildClipMetadata(payload, tags);
+  const enrichment = await enrichContent(payload, body);
+  const metadata = buildClipMetadata(payload, enrichment.tags, enrichment.summary);
   await ensureTagOptions(workspace.base, metadata.tags);
   const doc = await createDoc(workspace.folder.token, title, blocks, metadata);
   let record;
   try {
-    record = await createRecord(workspace.base, doc, title, body, metadata);
+    const recordBody = metadata.summary ? `内容摘要：${metadata.summary}\n\n${body}` : body;
+    record = await createRecord(workspace.base, doc, title, recordBody, metadata);
     await registerPair({
       recordId: record.id,
       docToken: doc.token || docTokenFromUrl(doc.url),
@@ -1612,6 +1923,8 @@ async function handleClip(payload) {
     recordId: record.id,
     imageCount: blocks.filter((block) => block.type === "image").length,
     tags: metadata.tags,
+    summary: metadata.summary,
+    aiSource: enrichment.source,
     publishedAt: metadata.publishedDisplay
   };
 }
@@ -1648,7 +1961,7 @@ function readJson(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 2_000_000) {
+      if (body.length > 40_000_000) {
         reject(new Error("请求过大"));
         req.destroy();
       }
@@ -1683,6 +1996,10 @@ const server = createServer(async (req, res) => {
         name: "飞书剪存pro",
         folder: FOLDER_NAME,
         base: BASE_NAME,
+        ai: {
+          provider: AI_PROVIDER,
+          enabled: AI_PROVIDER !== "none"
+        },
         deletionSync: {
           enabled: true,
           intervalSeconds: Math.round(SYNC_INTERVAL_MS / 1000),
@@ -1745,8 +2062,10 @@ export {
   isAllowedRequestOrigin,
   isNoiseLine,
   mergeTagOptions,
+  normalizeAiEnrichment,
   normalizePublishedAt,
   normalizeTitle,
   recordExistsFromGet,
-  removeMenuRuns
+  removeMenuRuns,
+  prepareEmbeddedImages
 };

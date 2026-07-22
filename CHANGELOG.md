@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5 - 2026-07-22
+
+- Uses local AI to generate a concise content summary and 2–5 focused tags, with a non-blocking heuristic fallback.
+- Keeps the generated summary consistent between the cloud document and the Base body field.
+- Captures rendered article images in the browser and stages them locally so protected or anti-hotlink source images upload reliably.
+- Recognizes publisher account names from dynamic article metadata and author components, including Baijiahao pages.
+- Filters platform names and ordinary editor names from publisher candidates.
+
 ## 1.0.4 - 2026-07-22
 
 - Creates missing Base select options before saving newly inferred content tags.

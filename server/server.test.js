@@ -12,9 +12,11 @@ const {
   inferTags,
   isAllowedRequestOrigin,
   mergeTagOptions,
+  normalizeAiEnrichment,
   normalizePublishedAt,
   normalizeTitle,
-  recordExistsFromGet
+  recordExistsFromGet,
+  prepareEmbeddedImages
 } = await import("./server.js");
 
 test("local service accepts extension origins and rejects ordinary websites", () => {
@@ -36,7 +38,7 @@ test("article title is the single source for both destinations", () => {
   );
 });
 
-test("tags are content-specific, synchronized, and limited to three", () => {
+test("heuristic tags are content-specific and limited to five", () => {
   const policyTags = inferTags({
     articleTitle: "国务院关于《扩大消费“十五五”规划》的批复",
     description: "原则同意扩大消费十五五规划，请认真组织实施。",
@@ -49,7 +51,7 @@ test("tags are content-specific, synchronized, and limited to three", () => {
     text: "完善信用信息归集、信用监管和信用修复机制，持续优化营商环境。"
   });
   assert.deepEqual(creditTags, ["信用建设", "营商环境", "市场监管"]);
-  assert.ok(creditTags.length <= 3);
+  assert.ok(creditTags.length <= 5);
   assert.equal(creditTags.includes("资料"), false);
   assert.equal(creditTags.includes("工作"), false);
 
@@ -60,6 +62,38 @@ test("tags are content-specific, synchronized, and limited to three", () => {
   assert.deepEqual(new Set(aiTags), new Set(["人工智能", "政务服务"]));
   assert.notDeepEqual(aiTags, policyTags);
   assert.notDeepEqual(aiTags, creditTags);
+});
+
+test("AI enrichment keeps a useful summary and two to five focused tags", () => {
+  const payload = {
+    articleTitle: "全国就业公共服务地图发布",
+    text: "全国就业公共服务地图汇集就业服务机构、零工市场和招聘活动信息。"
+  };
+  const enrichment = normalizeAiEnrichment(
+    {
+      summary: "全国就业公共服务地图整合公共就业机构、零工市场和招聘活动信息，为劳动者及用人单位提供统一、便捷的就业资源查询入口。",
+      tags: ["政策", "就业服务", "零工市场", "招聘信息", "公共就业", "数据平台", "额外标签", "待整理"],
+      source: "ollama"
+    },
+    payload,
+    payload.text
+  );
+  assert.equal(enrichment.source, "ollama");
+  assert.match(enrichment.summary, /就业资源查询入口/);
+  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 5);
+  assert.equal(enrichment.tags.includes("政策"), false);
+  assert.equal(enrichment.tags.includes("待整理"), false);
+  assert.equal(new Set(enrichment.tags).size, enrichment.tags.length);
+});
+
+test("AI fallback still returns two reviewable tags", () => {
+  const enrichment = normalizeAiEnrichment(
+    {},
+    { articleTitle: "简短记录", text: "只有一段很短的内容。" },
+    "只有一段很短的内容。"
+  );
+  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 5);
+  assert.equal(enrichment.source, "fallback");
 });
 
 test("tag options are deduplicated and missing content tags are added", () => {
@@ -139,7 +173,8 @@ test("document XML uses the exact article title and preserves basic formatting",
       publishedAt: "2025-09-12",
       publisher: "示例市发展和改革委员会"
     },
-    ["政策", "案例", "资料"]
+    ["政策", "案例", "资料"],
+    "这是由 AI 生成并校验后的内容摘要。"
   );
   const xml = buildDocXml(
     "原始文章标题",
@@ -158,10 +193,32 @@ test("document XML uses the exact article title and preserves basic formatting",
   assert.match(xml, /<b>标签：<\/b>政策、案例、资料/);
   assert.match(xml, /<b>发布时间：<\/b>2025-09-12/);
   assert.match(xml, /<b>发布单位：<\/b>示例市发展和改革委员会/);
+  assert.match(xml, /<b>内容摘要：<\/b>这是由 AI 生成并校验后的内容摘要/);
   assert.match(xml, /<h2>分节标题<\/h2>/);
   assert.match(xml, /<p>正文 A &amp; B<\/p>/);
   assert.match(xml, /<ul><li>第一项<\/li><li>第二项<\/li><\/ul>/);
   assert.match(xml, /<blockquote>引用内容<\/blockquote>/);
+});
+
+test("browser-captured images are staged locally for protected source sites", () => {
+  const payload = {
+    articleTitle: "受保护图片测试",
+    blocks: [
+      {
+        type: "image",
+        src: "https://example.gov.cn/protected/image.png",
+        width: 606,
+        height: 693,
+        dataUrl: `data:image/png;base64,${Buffer.from("image-bytes").toString("base64")}`
+      }
+    ]
+  };
+  const blocks = cleanArticleBlocks(payload);
+  assert.match(blocks[0].dataUrl, /^data:image\/png;base64,/);
+  const prepared = prepareEmbeddedImages(blocks);
+  assert.equal(prepared.assets.length, 1);
+  assert.match(prepared.blocks[0].placeholder, /^FEISHU_CLIPPER_IMAGE_[a-f0-9]+$/);
+  assert.match(buildDocXml("受保护图片测试", prepared.blocks), /<p>FEISHU_CLIPPER_IMAGE_[a-f0-9]+<\/p>/);
 });
 
 test("sharing controls and editorial credits never enter the saved body", () => {

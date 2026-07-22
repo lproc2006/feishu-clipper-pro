@@ -80,13 +80,19 @@ lark-cli auth status
 
 ### 开发者模式安装
 
-商店版本审核期间，可从 GitHub Release 下载 `feishu-clipper-pro-extension-1.0.4.zip` 并解压。
+商店版本审核期间，可从 GitHub Release 下载 `feishu-clipper-pro-extension-1.0.5.zip` 并解压。
 
 Chrome：打开 `chrome://extensions`，启用“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 `extension` 目录。
 
 Edge：打开 `edge://extensions`，启用“开发人员模式”，点击“加载解压缩的扩展”，选择解压后的 `extension` 目录。
 
-## 6. 卸载
+## 6. 启用本机 AI 摘要与标签
+
+本机服务会自动连接 `http://127.0.0.1:11434` 的 Ollama，并使用已安装的第一个模型。安装 Ollama 后至少下载一个支持中文的模型即可，无需把网页正文发送到第三方模型服务。未检测到模型时，剪存仍会完成，并自动使用本地规则生成摘要和标签。
+
+高级用户可通过 `FEISHU_CLIPPER_AI_MODEL` 指定 Ollama 模型，或将 `FEISHU_CLIPPER_AI_PROVIDER` 设为 `openai`，同时配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`。启用远程模型意味着正文会按用户配置发送给对应服务商。
+
+## 7. 卸载
 
 先从浏览器扩展管理页移除扩展，再运行对应脚本：
 
