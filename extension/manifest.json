@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "飞书剪存pro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "一键将当前网页完整保存为飞书云文档和多维表格，需安装开源本机配套服务。",
   "homepage_url": "https://github.com/lproc2006/feishu-clipper-pro",
   "permissions": ["activeTab", "scripting"],

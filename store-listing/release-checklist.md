@@ -2,6 +2,7 @@
 
 - [ ] `npm test` passes in `server/`.
 - [ ] Manifest, popup, content script, and server package use the same version.
+- [ ] `node scripts/verify-icon-lock.js` confirms the approved Feishu icon set.
 - [ ] No personal paths, credentials, tokens, Base IDs, document IDs, email addresses, or private URLs are present.
 - [ ] Extension ZIP has `manifest.json` at its archive root.
 - [ ] Companion ZIP includes server, installers, privacy policy, and installation guide.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 - 2026-07-22
+
+- Restores the enlarged Feishu app icon across the extension and store assets.
+- Adds a canonical icon master and hash lock so accidental icon replacements fail the release build.
+
 ## 1.0.0 - 2026-07-20
 
 - First public release.

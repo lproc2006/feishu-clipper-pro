@@ -6,6 +6,8 @@ VERSION="$(node -p "require('$ROOT_DIR/extension/manifest.json').version")"
 DIST_DIR="$ROOT_DIR/dist"
 PACKAGE_DIR="$DIST_DIR/extension"
 
+node "$ROOT_DIR/scripts/verify-icon-lock.js"
+
 rm -rf "$DIST_DIR"
 mkdir -p "$PACKAGE_DIR"
 cp -R "$ROOT_DIR/extension/." "$PACKAGE_DIR/"
