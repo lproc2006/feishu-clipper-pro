@@ -38,7 +38,7 @@ test("article title is the single source for both destinations", () => {
   );
 });
 
-test("heuristic tags are content-specific and limited to five", () => {
+test("heuristic tags are content-specific and limited to three short tags", () => {
   const policyTags = inferTags({
     articleTitle: "国务院关于《扩大消费“十五五”规划》的批复",
     description: "原则同意扩大消费十五五规划，请认真组织实施。",
@@ -51,7 +51,8 @@ test("heuristic tags are content-specific and limited to five", () => {
     text: "完善信用信息归集、信用监管和信用修复机制，持续优化营商环境。"
   });
   assert.deepEqual(creditTags, ["信用建设", "营商环境", "市场监管"]);
-  assert.ok(creditTags.length <= 5);
+  assert.ok(creditTags.length <= 3);
+  assert.ok(creditTags.every((tag) => tag.length <= 5));
   assert.equal(creditTags.includes("资料"), false);
   assert.equal(creditTags.includes("工作"), false);
 
@@ -64,7 +65,7 @@ test("heuristic tags are content-specific and limited to five", () => {
   assert.notDeepEqual(aiTags, creditTags);
 });
 
-test("AI enrichment keeps a useful summary and two to five focused tags", () => {
+test("AI enrichment keeps a useful summary and two to three short focused tags", () => {
   const payload = {
     articleTitle: "全国就业公共服务地图发布",
     text: "全国就业公共服务地图汇集就业服务机构、零工市场和招聘活动信息。"
@@ -80,7 +81,8 @@ test("AI enrichment keeps a useful summary and two to five focused tags", () => 
   );
   assert.equal(enrichment.source, "ollama");
   assert.match(enrichment.summary, /就业资源查询入口/);
-  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 5);
+  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
+  assert.ok(enrichment.tags.every((tag) => tag.length <= 5));
   assert.equal(enrichment.tags.includes("政策"), false);
   assert.equal(enrichment.tags.includes("待整理"), false);
   assert.equal(new Set(enrichment.tags).size, enrichment.tags.length);
@@ -92,7 +94,8 @@ test("AI fallback still returns two reviewable tags", () => {
     { articleTitle: "简短记录", text: "只有一段很短的内容。" },
     "只有一段很短的内容。"
   );
-  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 5);
+  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
+  assert.ok(enrichment.tags.every((tag) => tag.length <= 5));
   assert.equal(enrichment.source, "fallback");
 });
 

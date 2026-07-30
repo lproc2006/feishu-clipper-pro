@@ -16,6 +16,9 @@ const SYNC_CONFIRMATIONS = 1;
 const AI_TIMEOUT_MS = Math.max(5_000, Number(process.env.FEISHU_CLIPPER_AI_TIMEOUT_MS || 45_000));
 const OLLAMA_URL = String(process.env.FEISHU_CLIPPER_OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
 const AI_PROVIDER = String(process.env.FEISHU_CLIPPER_AI_PROVIDER || "ollama").toLowerCase();
+const MIN_TAG_COUNT = 2;
+const MAX_TAG_COUNT = 3;
+const MAX_TAG_LENGTH = 5;
 const SYNC_INTERVAL_MS = Math.max(
   10_000,
   Number(process.env.FEISHU_CLIPPER_SYNC_INTERVAL_MS || 15_000)
@@ -414,7 +417,7 @@ async function ensureTagOptionsOnce(base, tags) {
       type: "select",
       multiple: true,
       options: merged.options,
-      description: "根据剪存内容自动提取的重点主题标签，2至5个"
+      description: "根据剪存内容自动提取的重点主题标签，默认2至3个，每个不超过5个字"
     }),
     "--yes",
     "--as",
@@ -921,7 +924,7 @@ function inferTags(payload) {
     const normalized = String(tag || "")
       .replace(/[《》“”"'‘’（）()【】\[\]\s]/g, "")
       .trim();
-    if (normalized.length < 2 || normalized.length > 10 || genericTags.has(normalized)) return;
+    if (normalized.length < 2 || normalized.length > MAX_TAG_LENGTH || genericTags.has(normalized)) return;
     const existing = candidates.get(normalized) || { tag: normalized, score: 0, titleSignal: false };
     existing.score = Math.max(existing.score, score);
     existing.titleSignal ||= titleSignal;
@@ -995,7 +998,7 @@ function inferTags(payload) {
   for (const candidate of ranked) {
     if (tags.some((tag) => tag.includes(candidate.tag) || candidate.tag.includes(tag))) continue;
     tags.push(candidate.tag);
-    if (tags.length === 5) break;
+    if (tags.length === MAX_TAG_COUNT) break;
   }
 
   if (!tags.length) {
@@ -1004,10 +1007,10 @@ function inferTags(payload) {
       .replace(/(?:通知|意见|办法|规定|方案|报告|公告|通告|批复)$/g, "")
       .replace(/[《》“”"'‘’（）()\s]/g, "")
       .trim();
-    if (fallback.length >= 2 && fallback.length <= 10) tags.push(fallback);
+    if (fallback.length >= 2 && fallback.length <= MAX_TAG_LENGTH) tags.push(fallback);
   }
 
-  return tags.length ? tags.slice(0, 5) : ["待整理"];
+  return tags.length ? tags.slice(0, MAX_TAG_COUNT) : ["待整理"];
 }
 
 function fallbackSummary(title, body) {
@@ -1043,15 +1046,15 @@ function normalizeAiTag(value) {
     .replace(/^[#＃]+/, "")
     .replace(/[《》“”"'‘’（）()【】\[\]，,。；;：:\s]/g, "")
     .trim();
-  if (tag.length < 2 || tag.length > 10 || genericTags.has(tag)) return "";
+  if (tag.length < 2 || tag.length > MAX_TAG_LENGTH || genericTags.has(tag)) return "";
   return tag;
 }
 
 function supplementalTags(payload) {
   const text = `${normalizeTitle(payload)}\n${normalizeBlockText(payload.text || payload.description)}`;
   const rules = [
-    ["公共就业服务", /公共就业|就业公共服务|就业服务地图/],
-    ["就业服务地图", /就业.{0,4}地图|服务地图/],
+    ["就业服务", /公共就业|就业公共服务|就业服务地图/],
+    ["就业地图", /就业.{0,4}地图|服务地图/],
     ["人才服务", /人才服务|人才招聘|人力资源服务/],
     ["劳动保障", /劳动保障|劳动关系|劳动监察|劳动合同/],
     ["政策解读", /政策解读|答记者问|图解|权威解读/],
@@ -1075,15 +1078,15 @@ function normalizeAiEnrichment(value, payload, body) {
   for (const tag of inferTags(payload)) add(tag);
   for (const tag of supplementalTags(payload)) add(tag);
 
-  if (tags.length < 2) {
+  if (tags.length < MIN_TAG_COUNT) {
     const titleTag = normalizeTitle(payload)
       .replace(/(?:发布|印发|通知|公告|通告|办法|意见|方案|报告|解读)$/g, "")
       .replace(/[《》“”"'‘’（）()【】\[\]\s]/g, "")
-      .slice(0, 10);
+      .slice(0, MAX_TAG_LENGTH);
     add(titleTag);
   }
-  if (tags.length < 2) add("待人工复核");
-  return { summary, tags: tags.slice(0, 5), source: value?.source || "fallback" };
+  if (tags.length < MIN_TAG_COUNT) add("待人工复核");
+  return { summary, tags: tags.slice(0, MAX_TAG_COUNT), source: value?.source || "fallback" };
 }
 
 async function fetchJsonWithTimeout(url, options = {}) {
@@ -1112,8 +1115,8 @@ function parseAiJson(value) {
 function aiPrompt(payload, body) {
   return [
     "你是中文网页归档编辑。请仅返回 JSON，不要解释。",
-    "任务：用一段话准确概括正文，并提取 2 至 5 个突出核心对象、政策主题或业务事项的标签。",
-    "要求：摘要 80 至 180 个汉字；标签每个 2 至 10 个汉字；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化标签；不要把网站名当标签。",
+    "任务：用一段话准确概括正文，并提取 2 至 3 个突出核心对象、政策主题或业务事项的标签。",
+    "要求：摘要 80 至 180 个汉字；标签每个 2 至 5 个汉字；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化标签；不要把网站名当标签。",
     '返回格式：{"summary":"...","tags":["...","..."]}',
     `标题：${normalizeTitle(payload)}`,
     `发布单位：${normalizeBlockText(payload.publisher) || "未识别"}`,

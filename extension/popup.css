@@ -59,24 +59,6 @@ p {
   overflow-wrap: anywhere;
 }
 
-button {
-  width: 100%;
-  height: 40px;
-  margin-top: 14px;
-  border: 0;
-  border-radius: 8px;
-  background: #1f6feb;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-button:disabled {
-  cursor: default;
-  opacity: 0.62;
-}
-
 .privacy-note {
   margin-top: 10px;
   color: #6b7280;

@@ -33,14 +33,15 @@
     .label { margin-bottom: 6px; color: #6b7280; font-size: 12px; }
     .title { font-size: 14px; font-weight: 600; line-height: 1.45; }
     .url { margin-top: 6px; color: #6b7280; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
-    .clip { width: 100%; height: 40px; margin-top: 14px; border: 0; border-radius: 8px; background: #1f6feb; color: #fff; font-size: 15px; font-weight: 700; }
+    .toolbar-wrap { position: relative; width: 38px; height: 38px; }
+    .toolbar-badge { display: none; position: absolute; right: -3px; bottom: -3px; min-width: 18px; height: 18px; padding: 0 4px; border: 2px solid #f6f7f9; border-radius: 9px; color: #fff; background: #00b578; font-size: 12px; font-weight: 700; line-height: 14px; text-align: center; }
     .privacy { margin: 10px 0 0; color: #6b7280; font-size: 11px; line-height: 1.5; }
     .privacy span { color: #0b57d0; }
     .result { display: none; margin-top: 14px; padding: 12px; border: 1px solid #b7ebc6; border-radius: 8px; color: #165d3d; background: #f0fff7; font-size: 13px; line-height: 1.6; }
     .result b { color: #0b57d0; font-weight: 500; }
     body.success .status { color: #165d3d; }
-    body.success .clip { background: #165d3d; }
     body.success .result { display: block; }
+    body.success .toolbar-badge { display: block; }
   </style>
 </head>
 <body>
@@ -48,7 +49,7 @@
     <div class="browserbar">
       <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
       <div class="address">https://example.gov.cn/policy/article</div>
-      <img class="toolbar-icon" src="assets/icon-1024.png" alt="" />
+      <div class="toolbar-wrap"><img class="toolbar-icon" src="assets/icon-1024.png" alt="" /><span class="toolbar-badge">✓</span></div>
     </div>
     <div class="workspace">
       <article class="article">
@@ -61,14 +62,13 @@
         <table><thead><tr><th>服务事项</th><th>办理方式</th><th>完成时限</th></tr></thead><tbody><tr><td>企业开办</td><td>线上集成办理</td><td>1 个工作日</td></tr><tr><td>政策兑现</td><td>免申即享</td><td>自动匹配</td></tr></tbody></table>
       </article>
       <aside class="popup">
-        <div class="brand"><img src="assets/icon-1024.png" alt="" /><div><h3>飞书剪存pro</h3><p class="status">准备剪存当前网页</p></div></div>
+        <div class="brand"><img src="assets/icon-1024.png" alt="" /><div><h3>飞书剪存pro</h3><p class="status">正在剪存...</p></div></div>
         <section class="page"><div class="label">当前网页</div><div class="title">优化营商环境典型经验做法</div><div class="url">https://example.gov.cn/policy/article</div></section>
-        <button class="clip">完整剪存</button>
         <p class="privacy">仅在点击时读取当前网页，并通过本机服务写入你自己的飞书空间；数据不会发送给插件开发者。<span>隐私说明</span></p>
-        <section class="result">已保存。<br><b>打开飞书云文档</b><br><b>打开网页剪存库</b><br>发布时间：2026-07-18<br>标签：政策、案例</section>
+        <section class="result">已剪存完毕。<br><b>打开飞书云文档</b><br><b>打开网页剪存库</b><br>发布时间：2026-07-18<br>标签：营商环境、企业服务</section>
       </aside>
     </div>
   </div>
-  <script>if (new URLSearchParams(location.search).has("success")) { document.body.classList.add("success"); document.querySelector(".status").textContent = "剪存完成"; document.querySelector(".clip").textContent = "已完整剪存"; }</script>
+  <script>if (new URLSearchParams(location.search).has("success")) { document.body.classList.add("success"); document.querySelector(".status").textContent = "已剪存完毕"; }</script>
 </body>
 </html>
