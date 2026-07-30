@@ -31,6 +31,10 @@
 
 ![飞书剪存pro 剪存完成](store-listing/assets/screenshot-success-1280x800.png)
 
+设置页默认不读取云盘；点击“选择保存文件夹”后才按层显示现有文件夹。多维表格名称可以修改，并与剪存云文档保存在同一位置：
+
+![飞书剪存pro 保存位置设置](store-listing/assets/screenshot-settings-1280x800.png)
+
 ## 安装要求
 
 浏览器扩展需要本机配套服务才能连接飞书。首次使用需准备：

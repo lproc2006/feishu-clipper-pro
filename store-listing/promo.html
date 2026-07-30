@@ -27,13 +27,14 @@
     .line.title { width: 76%; height: 12px; margin: 0 0 18px; background: #27364d; }
     .line.blue { width: 46%; background: #6f9cff; }
     .image { width: 100%; height: 31%; margin: 18px 0 12px; border-radius: 4px; background: #e4f8f3; border-left: 8px solid #00b899; }
-    .arrow { position: absolute; left: 55%; z-index: 3; width: 54px; height: 54px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #3370ff; box-shadow: 0 8px 20px rgba(51,112,255,.28); font-size: 30px; font-weight: 700; }
+    .arrow { position: absolute; left: 48%; z-index: 3; width: 54px; height: 54px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #3370ff; box-shadow: 0 8px 20px rgba(51,112,255,.28); font-size: 30px; font-weight: 700; }
     .outputs { position: relative; z-index: 2; display: grid; gap: 16px; width: 43%; margin-left: auto; }
     .output { min-height: 118px; padding: 18px; border: 1px solid #d5dce7; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(35,53,84,.12); }
     .output.green { border-top: 7px solid #00b899; }
     .output.gold { border-top: 7px solid #f5a623; }
     .output strong { display: block; margin-bottom: 12px; font-size: 20px; }
     .output span { color: #667085; font-size: 14px; line-height: 1.5; }
+    .destination { padding: 10px 12px; border: 1px solid #b9d1ff; border-radius: 6px; color: #245bdb; background: #f3f7ff; font-size: 14px; font-weight: 650; text-align: center; }
     .check { position: absolute; right: -5px; top: 8%; width: 36px; height: 36px; display: grid; place-items: center; border: 3px solid #f7f9fc; border-radius: 50%; color: #fff; background: #00b578; font-size: 21px; font-weight: 800; }
 
     @media (max-width: 600px) {
@@ -48,12 +49,13 @@
       .feature { padding: 5px 8px; font-size: 11px; }
       .visual { position: absolute; right: 14px; bottom: 14px; width: 150px; height: 110px; opacity: .98; }
       .browser { left: 0; top: 12px; width: 82px; height: 82px; }
-      .arrow { left: 65px; width: 25px; height: 25px; font-size: 15px; }
+      .arrow { left: 36%; width: 25px; height: 25px; font-size: 15px; }
       .outputs { gap: 6px; width: 68px; }
       .output { min-height: 42px; padding: 6px; border-radius: 5px; box-shadow: none; }
       .output.green, .output.gold { border-top-width: 4px; }
       .output strong { margin: 0; font-size: 8px; }
       .output span, .check { display: none; }
+      .destination { padding: 4px 2px; font-size: 6px; white-space: nowrap; }
       .line { height: 3px; margin-top: 5px; }
       .line.title { height: 6px; margin-bottom: 8px; }
       .image { margin: 7px 0 4px; border-left-width: 3px; }
@@ -66,12 +68,12 @@
       <div class="brand"><img src="assets/icon-1024.png" alt="" /><div class="brand-name">飞书剪存pro</div></div>
       <h1>复杂网页，也能完整存进飞书</h1>
       <p class="sub">一键保留正文、图片、表格与公式，同步生成云文档和多维表格记录。</p>
-      <div class="features"><span class="feature">AI 重点标签</span><span class="feature">跨设备查重</span><span class="feature">本机优先处理</span></div>
+      <div class="features"><span class="feature">图片表格保真</span><span class="feature">保存位置可控</span><span class="feature">本机优先处理</span></div>
     </section>
     <section class="visual" aria-hidden="true">
       <div class="browser"><div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i></div><div class="page"><div class="line title"></div><div class="line blue"></div><div class="image"></div><div class="line"></div><div class="line"></div><div class="line" style="width:72%"></div></div></div>
       <div class="arrow">›</div>
-      <div class="outputs"><div class="output green"><strong>飞书云文档</strong><span>结构与图片完整保留</span></div><div class="output gold"><strong>多维表格</strong><span>日期、单位、标签可检索</span></div></div>
+      <div class="outputs"><div class="output green"><strong>飞书云文档</strong><span>结构与图片完整保留</span></div><div class="output gold"><strong>多维表格</strong><span>日期、单位、标签可检索</span></div><div class="destination">统一存入选定文件夹</div></div>
       <span class="check">✓</span>
     </section>
   </main>

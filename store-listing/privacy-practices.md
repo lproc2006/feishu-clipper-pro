@@ -34,7 +34,7 @@ The use of information received from browser APIs adheres to the Chrome Web Stor
 
 `scripting`: Required to inject the bundled, reviewable article extractor into the active tab. No remote code is downloaded or executed.
 
-`storage`: Required to keep normalized clipped-page URLs and timestamps locally in the current browser so the icon checkmark persists, and to retain the selected Drive folder identifier and display path, Base name, and duplicate-handling preference.
+`storage`: Required to keep normalized clipped-page URLs and timestamps locally in the current browser so the icon checkmark persists, and to retain the selected Drive folder identifier and display path, Base name, and duplicate-handling preference. The folder list is requested only after the user clicks the folder-selection control.
 
 `tabs`: Required to compare open-tab URLs with the local clipped-page list and update the icon checkmark. It is not used to collect or transmit browsing history.
 

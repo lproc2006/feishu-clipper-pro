@@ -12,6 +12,6 @@
 - [ ] Edge Privacy answers match `privacy-practices.md`.
 - [ ] Local companion dependency is disclosed in both store descriptions.
 - [ ] Reviewer notes contain complete setup and test steps.
-- [ ] 1280x800 screenshot, 440x280 promotional tile, 300x300 logo, and 128x128 icon are uploaded.
+- [ ] Three current 1280x800 screenshots, the 440x280 promotional tile, 300x300 logo, and 128x128 icon are uploaded.
 - [ ] GitHub release contains both ZIP files and checksums.
 - [ ] Chrome and Edge submissions are sent for review only after all listing sections are complete.

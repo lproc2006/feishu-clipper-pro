@@ -20,7 +20,8 @@ Key features:
 • Preserves images, GIFs, native image captions, HTML tables, headings, lists, quotations, code languages, and LaTeX formulas.
 • Centers document titles and images, indents ordinary Chinese body paragraphs by two full-width spaces, and preserves centered or right-aligned source paragraphs.
 • Removes common navigation, footer, sharing, editor, and reviewer elements using general content rules.
-• Creates a Feishu Clipper folder by default, or lets users browse their own Drive one level at a time and select an existing folder.
+• Creates or reuses the root-level Feishu Clipper folder when no destination is selected. Drive folders are not read until the user clicks Select folder; each next level is loaded only after entering its parent.
+• Uses “Web Clip Library” as the default editable Base name and always keeps the Base in the same folder as clipped documents.
 • Keeps the document and Base record consistent, including title, date, publisher, tags, URL, and body.
 • Links each document to its Base record so a confirmed deletion on one side can remove the matching item.
 • Shows a green checkmark for locally known pages and checks the Base library after a click to find duplicates across browsers and devices.
