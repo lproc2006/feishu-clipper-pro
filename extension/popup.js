@@ -1,5 +1,5 @@
 const SERVER = "http://127.0.0.1:8787";
-const BUILD_VERSION = "1.0.5";
+const BUILD_VERSION = "1.0.6";
 
 if (chrome.runtime.getManifest().version !== BUILD_VERSION) {
   chrome.runtime.reload();
@@ -8,14 +8,10 @@ if (chrome.runtime.getManifest().version !== BUILD_VERSION) {
 const statusEl = document.getElementById("status");
 const titleEl = document.getElementById("title");
 const urlEl = document.getElementById("url");
-const clipButton = document.getElementById("clip");
 const resultEl = document.getElementById("result");
 const errorEl = document.getElementById("error");
 
-let currentPayload = null;
-
-function setBusy(isBusy, message) {
-  clipButton.disabled = isBusy;
+function setStatus(message) {
   statusEl.textContent = message;
 }
 
@@ -52,43 +48,45 @@ async function extractPage(tab) {
   }
 }
 
-async function initialize() {
-  clearOutput();
-  const tab = await getActiveTab();
-  currentPayload = await extractPage(tab);
-  titleEl.textContent = currentPayload.title || tab.title || "未命名网页";
-  urlEl.textContent = currentPayload.url || tab.url || "";
+async function markClipped(tab, url) {
+  await chrome.runtime.sendMessage({
+    type: "FEISHU_CLIP_MARKED",
+    tabId: tab.id,
+    url
+  });
 }
 
-clipButton.addEventListener("click", async () => {
+async function clipCurrentPage() {
   clearOutput();
-  setBusy(true, "正在完整剪存...");
+  setStatus("正在剪存...");
 
   try {
     const tab = await getActiveTab();
-    currentPayload = await extractPage(tab);
+    const payload = await extractPage(tab);
+    titleEl.textContent = payload.title || tab.title || "未命名网页";
+    urlEl.textContent = payload.url || tab.url || "";
 
     const response = await fetch(`${SERVER}/clip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentPayload)
+      body: JSON.stringify(payload)
     });
-
     const data = await response.json();
     if (!response.ok || !data.ok) {
       throw new Error(data.error || `本机服务返回异常：${response.status}`);
     }
 
+    await markClipped(tab, payload.url || tab.url).catch(() => {});
     resultEl.hidden = false;
     resultEl.innerHTML = [
-      "已保存。",
+      "已剪存完毕。",
       data.docUrl ? `<br><a href="${data.docUrl}" target="_blank">打开飞书云文档</a>` : "",
       data.baseUrl ? `<br><a href="${data.baseUrl}" target="_blank">打开网页剪存库</a>` : "",
       data.publishedAt ? `<br>发布时间：${data.publishedAt}` : "",
       data.imageCount ? `<br>图片：${data.imageCount} 张` : "",
       data.tags?.length ? `<br>标签：${data.tags.join("、")}` : ""
     ].join("");
-    setBusy(false, "剪存完成");
+    setStatus("已剪存完毕");
   } catch (err) {
     showError(
       [
@@ -99,11 +97,8 @@ clipButton.addEventListener("click", async () => {
         err.message
       ].join("\n")
     );
-    setBusy(false, "剪存失败");
+    setStatus("剪存失败");
   }
-});
+}
 
-initialize().catch((err) => {
-  showError(err.message);
-  setBusy(false, "读取网页失败");
-});
+clipCurrentPage();

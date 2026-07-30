@@ -9,7 +9,7 @@ Archive the current web article, after an explicit user click, into the user's o
 ## Data categories handled
 
 - Website content: yes. Article title, URL, text, image data, table structure, publication date, publisher, generated summary, and tags are required for the clipping feature.
-- Web history: no. The extension does not read or store browsing history.
+- Web history: no. The extension does not use the browser history database. It stores only normalized URLs and timestamps for pages the user successfully clipped, locally in extension storage, to display the checkmark.
 - Authentication information: no. Authentication is handled separately by the official lark-cli on the user's device.
 - Personally identifiable information: not intentionally collected. If the selected page contains such information, it is processed only as part of the user-requested clipping operation.
 - User activity or analytics: no.
@@ -17,7 +17,7 @@ Archive the current web article, after an explicit user click, into the user's o
 
 ## Processing and transfer
 
-- Processing begins only after the user opens the extension and clicks Full Clip.
+- Processing begins only after the user clicks the extension icon; clipping then starts automatically.
 - Data is sent to `127.0.0.1` on the user's device.
 - AI processing uses local Ollama by default. A remote OpenAI-compatible provider is used only when the user explicitly configures one in the companion environment.
 - The companion sends it through the official lark-cli to the user's own Feishu or Lark workspace.
@@ -33,6 +33,10 @@ The use of information received from browser APIs adheres to the Chrome Web Stor
 `activeTab`: Required to read only the current page after an explicit user action. This replaces broad permanent website access.
 
 `scripting`: Required to inject the bundled, reviewable article extractor into the active tab. No remote code is downloaded or executed.
+
+`storage`: Required to keep normalized clipped-page URLs and timestamps locally in the current browser so the icon checkmark persists.
+
+`tabs`: Required to compare open-tab URLs with the local clipped-page list and update the icon checkmark. It is not used to collect or transmit browsing history.
 
 `http://127.0.0.1:8787/*`: Required to communicate with the open-source companion service running only on the user's computer. The service rejects ordinary website origins.
 

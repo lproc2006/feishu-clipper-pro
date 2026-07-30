@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.6 - 2026-07-27
+
+- Starts clipping immediately when the extension icon is clicked and removes the second Full Clip button.
+- Shows an explicit completion message after a successful clip.
+- Stores normalized clipped-page URLs locally and displays a green checkmark badge when those pages are open in the same browser.
+- Produces 2–3 focused tags by default and limits every tag to five characters.
+- Updates privacy disclosures, reviewer instructions, and store copy for the new local URL marker.
+
 ## 1.0.5 - 2026-07-22
 
 - Uses local AI to generate a concise content summary and 2–5 focused tags, with a non-blocking heuristic fallback.
