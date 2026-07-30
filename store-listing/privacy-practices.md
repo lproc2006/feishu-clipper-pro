@@ -9,7 +9,7 @@ Archive the current web article, after an explicit user click, into the user's o
 ## Data categories handled
 
 - Website content: yes. Article title, URL, text, image data, table structure, publication date, publisher, generated summary, and tags are required for the clipping feature.
-- Web history: no. The extension does not use the browser history database. It stores only normalized URLs and timestamps for pages the user successfully clipped, locally in extension storage, to display the checkmark.
+- Web history: yes, limited to normalized URLs and timestamps for pages the user explicitly clips. This data remains only in browser-local extension storage to display the clipped checkmark; the extension does not read the browser history database or transmit the list to the developer.
 - Authentication information: no. Authentication is handled separately by the official lark-cli on the user's device.
 - Personally identifiable information: not intentionally collected. If the selected page contains such information, it is processed only as part of the user-requested clipping operation.
 - User activity or analytics: no.
