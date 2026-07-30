@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-最后更新：2026-07-27
+最后更新：2026-07-30
 
 ## 中文
 
@@ -8,11 +8,13 @@
 
 ### 处理的数据
 
-扩展仅在用户点击时读取当前标签页，并处理完成剪存所必需的网页标题、网址、正文文本、正文图片数据、表格结构、发布时间、发布单位、内容摘要及自动标签。为显示已剪存对号，扩展会将用户成功剪存过的规范化网址和剪存时间保存在当前浏览器本地，并将打开标签页的网址与该本地清单比较。扩展不读取浏览器历史数据库，不向开发者发送该清单，也不收集与剪存无关的数据。
+扩展仅在用户点击时读取当前标签页，并处理完成剪存所必需的网页标题、网址、正文文本、正文图片数据、表格结构、发布时间、发布单位、内容摘要及自动标签。为显示已剪存对号，扩展会将用户成功剪存过的规范化网址和剪存时间保存在当前浏览器本地，并将打开标签页的网址与该本地清单比较。只有在用户点击扩展后，当前网址才会与用户自己的多维表格剪存库比较，用于跨浏览器和跨设备查重。扩展不读取浏览器历史数据库，不向开发者发送该清单，也不收集与剪存无关的数据。
 
 ### 数据流向与用途
 
 网页数据通过 `http://127.0.0.1:8787` 发送到用户设备上的本机配套服务，仅用于整理内容并生成飞书云文档和多维表格记录。默认 AI 整理只连接用户设备上的本机 Ollama。高级用户可自行选择并配置 OpenAI 兼容服务；启用后，正文会依照用户的配置发送给该服务商。本机服务通过用户本人配置并授权的飞书官方 lark-cli 与飞书或 Lark Open Platform 通信。插件开发者没有内容中转服务器，不能访问用户剪存的网页内容、飞书账号或飞书文件。
+
+设置页读取云盘文件夹时，也只通过本机配套服务和当前 lark-cli 用户授权调用飞书接口。扩展不读取飞书桌面客户端缓存、密码或登录凭据。
 
 ### 存储与保留
 
@@ -26,7 +28,7 @@
 
 - `activeTab`：仅在用户点击扩展时读取当前标签页。
 - `scripting`：在当前标签页运行正文提取代码。
-- `storage`：在当前浏览器本地保存已剪存网页的规范化网址和时间。
+- `storage`：保存已剪存网页的规范化网址和时间，以及用户选择的飞书云盘文件夹标识、显示路径、多维表格名称和重复处理设置。
 - `tabs`：将当前打开网页的网址与本地已剪存清单比较，以显示或清除图标对号。
 - `http://127.0.0.1:8787/*`：连接用户设备上的本机配套服务。
 
@@ -42,15 +44,17 @@ Feishu Clipper Pro has one purpose: after the user explicitly clicks the extensi
 
 ### Data handled
 
-Only after a user action, the extension processes the current tab's title, URL, article text, article image data, table structure, publication date, publisher, generated summary, and tags. To display the clipped checkmark, it stores normalized URLs and clipping times locally in the current browser and compares open-tab URLs with that local list. It does not read the browser history database, transmit this list to the developer, or collect unrelated data.
+Only after a user action, the extension processes the current tab's title, URL, article text, article image data, table structure, publication date, publisher, generated summary, and tags. To display the clipped checkmark, it stores normalized URLs and clipping times locally in the current browser and compares open-tab URLs with that local list. Only after the user clicks the extension, the current URL is also compared with the user's own Base library for cross-browser and cross-device duplicate detection. It does not read the browser history database, transmit this list to the developer, or collect unrelated data.
 
 ### Data flow and use
 
 Page data is sent to the companion service on the user's device at `http://127.0.0.1:8787` solely to organize content and create a Feishu cloud document and Base record. AI processing uses local Ollama by default. Advanced users may explicitly configure an OpenAI-compatible provider; in that case, article text is sent according to the user's provider configuration. The companion uses the official lark-cli configured and authorized by the user to communicate with Feishu or Lark Open Platform. The extension developer operates no content relay server and cannot access clipped page content, Feishu accounts, or Feishu files.
 
+The options page lists accessible Drive folders only through the local companion and the current lark-cli user authorization. It does not read Feishu desktop client caches, passwords, or login credentials.
+
 ### Storage and retention
 
-The browser extension does not persist page text or images. It stores only normalized clipped-page URLs and clipping times in browser-local storage for the icon checkmark; clearing extension storage or uninstalling the extension removes them. For protected images, the local companion writes short-lived files in the operating system's temporary directory and deletes them immediately after upload. It stores document tokens, Base record IDs, and resource identifiers needed for two-way deletion synchronization. This mapping remains in the user's local application data directory and can be removed by uninstalling the companion. Content stored in Feishu is controlled by the user's account and Feishu service.
+The browser extension does not persist page text or images. It stores normalized clipped-page URLs and clipping times for the icon checkmark, plus the selected Drive folder identifier and display path, Base name, and duplicate-handling preference. Clearing extension storage or uninstalling the extension removes them. For protected images, the local companion writes short-lived files in the operating system's temporary directory and deletes them immediately after upload. It stores document tokens, Base record IDs, and resource identifiers needed for two-way deletion synchronization. This mapping remains in the user's local application data directory and can be removed by uninstalling the companion. Content stored in Feishu is controlled by the user's account and Feishu service.
 
 ### Sharing, sale, and analytics
 

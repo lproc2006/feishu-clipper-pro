@@ -7,11 +7,73 @@
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    body { display: grid; place-items: center; background: #1f6feb; }
-    img { display: block; width: auto; height: 75vh; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f9fc; }
+    .canvas { position: relative; display: grid; grid-template-columns: 46% 54%; width: 100%; height: 100%; padding: 6% 8%; overflow: hidden; }
+    .canvas::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 12px; background: #3370ff; }
+    .copy { position: relative; z-index: 2; display: flex; flex-direction: column; justify-content: center; }
+    .brand { display: flex; align-items: center; gap: 18px; }
+    .brand img { width: 68px; height: 68px; filter: drop-shadow(0 8px 12px rgba(23,32,51,.14)); }
+    .brand-name { font-size: 44px; font-weight: 780; letter-spacing: 0; }
+    h1 { max-width: 590px; margin: 26px 0 14px; font-size: 40px; line-height: 1.16; letter-spacing: 0; }
+    .sub { max-width: 580px; color: #536174; font-size: 20px; line-height: 1.5; }
+    .features { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .feature { padding: 9px 14px; border: 1px solid #d8dee8; border-radius: 6px; color: #334155; background: #fff; font-size: 17px; }
+    .visual { position: relative; display: flex; align-items: center; justify-content: flex-end; }
+    .browser { position: absolute; left: 3%; top: 18%; width: 55%; height: 64%; overflow: hidden; border: 1px solid #d5dce7; border-radius: 8px; background: #fff; box-shadow: 0 18px 44px rgba(35,53,84,.14); }
+    .bar { height: 15%; display: flex; align-items: center; gap: 5px; padding: 0 5%; background: #edf1f6; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #aab4c2; }
+    .page { padding: 7% 8%; }
+    .line { height: 5px; margin-top: 8px; border-radius: 2px; background: #dce3ec; }
+    .line.title { width: 76%; height: 12px; margin: 0 0 18px; background: #27364d; }
+    .line.blue { width: 46%; background: #6f9cff; }
+    .image { width: 100%; height: 31%; margin: 18px 0 12px; border-radius: 4px; background: #e4f8f3; border-left: 8px solid #00b899; }
+    .arrow { position: absolute; left: 55%; z-index: 3; width: 54px; height: 54px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #3370ff; box-shadow: 0 8px 20px rgba(51,112,255,.28); font-size: 30px; font-weight: 700; }
+    .outputs { position: relative; z-index: 2; display: grid; gap: 16px; width: 43%; margin-left: auto; }
+    .output { min-height: 118px; padding: 18px; border: 1px solid #d5dce7; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(35,53,84,.12); }
+    .output.green { border-top: 7px solid #00b899; }
+    .output.gold { border-top: 7px solid #f5a623; }
+    .output strong { display: block; margin-bottom: 12px; font-size: 20px; }
+    .output span { color: #667085; font-size: 14px; line-height: 1.5; }
+    .check { position: absolute; right: -5px; top: 8%; width: 36px; height: 36px; display: grid; place-items: center; border: 3px solid #f7f9fc; border-radius: 50%; color: #fff; background: #00b578; font-size: 21px; font-weight: 800; }
+
+    @media (max-width: 600px) {
+      .canvas { grid-template-columns: 1fr; padding: 22px 24px; }
+      .canvas::before { width: 7px; }
+      .brand { gap: 10px; }
+      .brand img { width: 46px; height: 46px; }
+      .brand-name { font-size: 25px; }
+      h1 { width: 270px; margin: 16px 0 8px; font-size: 27px; line-height: 1.15; }
+      .sub { width: 250px; font-size: 14px; line-height: 1.4; }
+      .features { gap: 7px; margin-top: 13px; }
+      .feature { padding: 5px 8px; font-size: 11px; }
+      .visual { position: absolute; right: 14px; bottom: 14px; width: 150px; height: 110px; opacity: .98; }
+      .browser { left: 0; top: 12px; width: 82px; height: 82px; }
+      .arrow { left: 65px; width: 25px; height: 25px; font-size: 15px; }
+      .outputs { gap: 6px; width: 68px; }
+      .output { min-height: 42px; padding: 6px; border-radius: 5px; box-shadow: none; }
+      .output.green, .output.gold { border-top-width: 4px; }
+      .output strong { margin: 0; font-size: 8px; }
+      .output span, .check { display: none; }
+      .line { height: 3px; margin-top: 5px; }
+      .line.title { height: 6px; margin-bottom: 8px; }
+      .image { margin: 7px 0 4px; border-left-width: 3px; }
+    }
   </style>
 </head>
 <body>
-  <img src="assets/icon-1024.png" alt="" />
+  <main class="canvas">
+    <section class="copy">
+      <div class="brand"><img src="assets/icon-1024.png" alt="" /><div class="brand-name">飞书剪存pro</div></div>
+      <h1>复杂网页，也能完整存进飞书</h1>
+      <p class="sub">一键保留正文、图片、表格与公式，同步生成云文档和多维表格记录。</p>
+      <div class="features"><span class="feature">AI 重点标签</span><span class="feature">跨设备查重</span><span class="feature">本机优先处理</span></div>
+    </section>
+    <section class="visual" aria-hidden="true">
+      <div class="browser"><div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i></div><div class="page"><div class="line title"></div><div class="line blue"></div><div class="image"></div><div class="line"></div><div class="line"></div><div class="line" style="width:72%"></div></div></div>
+      <div class="arrow">›</div>
+      <div class="outputs"><div class="output green"><strong>飞书云文档</strong><span>结构与图片完整保留</span></div><div class="output gold"><strong>多维表格</strong><span>日期、单位、标签可检索</span></div></div>
+      <span class="check">✓</span>
+    </section>
+  </main>
 </body>
 </html>

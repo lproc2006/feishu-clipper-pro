@@ -20,7 +20,7 @@ cp -R "$ROOT_DIR/extension/." "$PACKAGE_DIR/"
 (
   cd "$ROOT_DIR"
   zip -qr "$DIST_DIR/feishu-clipper-pro-companion-$VERSION.zip" \
-    server scripts INSTALL.md PRIVACY.md SECURITY.md LICENSE README.md \
+    server scripts INSTALL.md PRIVACY.md SECURITY.md CHANGELOG.md COMPATIBILITY.md LICENSE README.md \
     -x "*/.DS_Store" "scripts/build-release.sh"
 )
 

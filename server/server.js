@@ -19,6 +19,10 @@ const AI_PROVIDER = String(process.env.FEISHU_CLIPPER_AI_PROVIDER || "ollama").t
 const MIN_TAG_COUNT = 2;
 const MAX_TAG_COUNT = 3;
 const MAX_TAG_LENGTH = 5;
+const MIN_SUMMARY_LENGTH = 100;
+const MAX_SUMMARY_LENGTH = 200;
+const BODY_PARAGRAPH_INDENT = "　　";
+const FOLDER_CACHE_MS = 120_000;
 const SYNC_INTERVAL_MS = Math.max(
   10_000,
   Number(process.env.FEISHU_CLIPPER_SYNC_INTERVAL_MS || 15_000)
@@ -32,12 +36,72 @@ const STATE_FILE =
   process.env.FEISHU_CLIPPER_STATE_FILE ||
   join(DEFAULT_STATE_DIR, "pairs.json");
 
-let workspaceCache = null;
+const workspaceCache = new Map();
+const workspacePromises = new Map();
 let pairRegistry = null;
 let registryQueue = Promise.resolve();
 let tagOptionQueue = Promise.resolve();
 let syncInFlight = null;
 let ollamaModelCache = null;
+const folderListCache = new Map();
+const clipRecordCache = new Map();
+
+class ClipError extends Error {
+  constructor(code, message, { stage = "unknown", status = 500, hint = "", cause } = {}) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "ClipError";
+    this.code = code;
+    this.stage = stage;
+    this.status = status;
+    this.hint = hint;
+  }
+}
+
+function cleanResourceName(value, fallback) {
+  const name = String(value || "").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!name) return fallback;
+  if (name.length > 50 || /[\\/:*?"<>|]/.test(name)) {
+    throw new ClipError("INVALID_PREFERENCES", "保存位置名称无效", {
+      stage: "preferences",
+      status: 400,
+      hint: "文件夹和多维表格名称应为 1 至 50 个字符，且不含路径符号。"
+    });
+  }
+  return name;
+}
+
+function normalizePreferences(value = {}) {
+  const folderMode = value.folderMode === "existing" ? "existing" : "managed";
+  const folderToken = String(value.folderToken || "").trim();
+  if (folderMode === "existing" && !/^[A-Za-z0-9_-]{8,128}$/.test(folderToken)) {
+    throw new ClipError("INVALID_PREFERENCES", "所选飞书云盘文件夹无效", {
+      stage: "preferences",
+      status: 400,
+      hint: "请在插件设置中重新读取并选择一个现有文件夹。"
+    });
+  }
+  const folderName = folderMode === "existing"
+    ? cleanResourceName(value.folderName, "已选文件夹")
+    : FOLDER_NAME;
+  const rawPath = String(value.folderPath || "").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return {
+    folderMode,
+    folderToken: folderMode === "existing" ? folderToken : "",
+    folderName,
+    folderPath: folderMode === "existing"
+      ? (rawPath.slice(0, 500) || `云盘 / ${folderName}`)
+      : `云盘根目录 / ${folderName}`,
+    baseName: cleanResourceName(value.baseName, BASE_NAME)
+  };
+}
+
+function workspaceKey(preferences) {
+  return [
+    preferences.folderMode,
+    preferences.folderToken || preferences.folderName,
+    preferences.baseName
+  ].join("\u0000");
+}
 
 function runLark(args, input, options = {}) {
   return new Promise((resolve, reject) => {
@@ -243,7 +307,8 @@ async function listDriveFiles(folderToken = "") {
     "files",
     "list",
     "--params",
-    JSON.stringify({ folder_token: folderToken, page_size: 50 }),
+    JSON.stringify({ folder_token: folderToken, page_size: 200 }),
+    "--page-all",
     "--as",
     "user",
     "--format",
@@ -252,13 +317,48 @@ async function listDriveFiles(folderToken = "") {
   return extractDriveFiles(result).map(normalizeDriveFile).filter(Boolean);
 }
 
+function normalizeFolderParentToken(value) {
+  const token = String(value || "").trim();
+  if (token && !/^[A-Za-z0-9_-]{8,128}$/.test(token)) {
+    throw new ClipError("INVALID_FOLDER_TOKEN", "飞书云盘文件夹标识无效", {
+      stage: "folder_list",
+      status: 400,
+      hint: "请返回上一级后重新选择文件夹。"
+    });
+  }
+  return token;
+}
+
+async function listDriveFolders({ parentToken = "", refresh = false } = {}) {
+  const normalizedParentToken = normalizeFolderParentToken(parentToken);
+  const cacheKey = normalizedParentToken || "__drive_root__";
+  const cached = folderListCache.get(cacheKey);
+  if (!refresh && cached?.expiresAt > Date.now()) return cached.value;
+
+  const folders = (await listDriveFiles(normalizedParentToken))
+    .filter((file) => file.type === "folder" && file.token)
+    .map((file) => ({
+      token: file.token,
+      name: file.name || "未命名文件夹",
+      url: file.url
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+
+  const value = {
+    parentToken: normalizedParentToken,
+    folders
+  };
+  folderListCache.set(cacheKey, { expiresAt: Date.now() + FOLDER_CACHE_MS, value });
+  return value;
+}
+
 async function findDriveFileInFolder(folderToken, name, expectedType) {
   const files = await listDriveFiles(folderToken);
   return files.find((file) => file.name === name && file.type === expectedType) || null;
 }
 
-async function ensureFolder() {
-  const existing = await findDriveFileInFolder("", FOLDER_NAME, "folder").catch(() => null);
+async function ensureFolder(folderName = FOLDER_NAME) {
+  const existing = await findDriveFileInFolder("", folderName, "folder").catch(() => null);
   if (existing) {
     return {
       token: existing.token,
@@ -271,7 +371,7 @@ async function ensureFolder() {
     "drive",
     "+create-folder",
     "--name",
-    FOLDER_NAME,
+    folderName,
     "--as",
     "user",
     "--format",
@@ -572,8 +672,8 @@ async function ensureBaseSchema(baseToken, tableId) {
   }
 }
 
-async function ensureBase(folderToken) {
-  const existing = await findDriveFileInFolder(folderToken, BASE_NAME, "bitable").catch(() => null);
+async function ensureBase(folderToken, baseName = BASE_NAME) {
+  const existing = await findDriveFileInFolder(folderToken, baseName, "bitable").catch(() => null);
   if (existing) {
     const baseToken = existing.token;
     const tableId = await getTableId(baseToken);
@@ -590,7 +690,7 @@ async function ensureBase(folderToken) {
     "base",
     "+base-create",
     "--name",
-    BASE_NAME,
+    baseName,
     "--table-name",
     TABLE_NAME,
     "--fields",
@@ -617,14 +717,32 @@ async function ensureBase(folderToken) {
   };
 }
 
-async function ensureWorkspace() {
-  if (workspaceCache?.folder?.token && workspaceCache?.base?.token) return workspaceCache;
-  const folder = await ensureFolder();
-  if (!folder.token) throw new Error("未能获取飞书剪存文件夹 token");
-  const base = await ensureBase(folder.token);
-  if (!base.token) throw new Error("未能获取网页剪存库 Base token");
-  workspaceCache = { folder, base };
-  return workspaceCache;
+async function ensureWorkspace(preferenceValue = {}) {
+  const preferences = normalizePreferences(preferenceValue);
+  const key = workspaceKey(preferences);
+  const cached = workspaceCache.get(key);
+  if (cached?.folder?.token && cached?.base?.token) return cached;
+  if (workspacePromises.has(key)) return workspacePromises.get(key);
+  const promise = (async () => {
+    const folder = preferences.folderMode === "existing"
+      ? {
+          token: preferences.folderToken,
+          url: `https://my.feishu.cn/drive/folder/${preferences.folderToken}`,
+          created: false
+        }
+      : await ensureFolder(preferences.folderName);
+    if (!folder.token) throw new Error("未能获取飞书剪存文件夹 token");
+    if (preferences.folderMode === "existing") {
+      await listDriveFiles(folder.token);
+    }
+    const base = await ensureBase(folder.token, preferences.baseName);
+    if (!base.token) throw new Error("未能获取网页剪存库 Base token");
+    const workspace = { folder, base, preferences };
+    workspaceCache.set(key, workspace);
+    return workspace;
+  })().finally(() => workspacePromises.delete(key));
+  workspacePromises.set(key, promise);
+  return promise;
 }
 
 function escapeXml(text) {
@@ -717,11 +835,97 @@ function safeHttpUrl(value) {
   }
 }
 
+const TRACKING_PARAMETERS = new Set(["fbclid", "gclid", "mc_cid", "mc_eid", "spm"]);
+
+function normalizeComparableUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!/^https?:$/.test(url.protocol)) return "";
+    url.hash = "";
+    for (const name of [...url.searchParams.keys()]) {
+      if (/^utm_/i.test(name) || TRACKING_PARAMETERS.has(name.toLowerCase())) {
+        url.searchParams.delete(name);
+      }
+    }
+    url.searchParams.sort();
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.href;
+  } catch (_err) {
+    return "";
+  }
+}
+
 function normalizeImageDataUrl(value) {
   const raw = String(value || "");
   const match = raw.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=]+)$/i);
   if (!match || match[2].length > 12_000_000) return "";
   return `data:${match[1].toLowerCase()};base64,${match[2]}`;
+}
+
+function imageMimeType(value) {
+  const mime = String(value || "").split(";", 1)[0].trim().toLowerCase();
+  return /^(?:image\/(?:png|jpeg|jpg|gif|webp))$/.test(mime) ? mime.replace("image/jpg", "image/jpeg") : "";
+}
+
+function detectedImageMime(headerValue, url, buffer) {
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  const headerMime = imageMimeType(headerValue);
+  if (headerMime) return headerMime;
+  const extension = String(url || "").match(/\.(png|jpe?g|gif|webp)(?:[?#]|$)/i)?.[1]?.toLowerCase();
+  return extension ? `image/${extension.replace("jpg", "jpeg")}` : "";
+}
+
+async function hydrateRemoteImages(blocks, sourceUrl) {
+  const pending = blocks.filter((block) => block.type === "image" && !block.dataUrl);
+  let nextIndex = 0;
+  let totalBytes = 0;
+  let downloaded = 0;
+  const deadline = Date.now() + 20_000;
+  const maxTotalBytes = 24 * 1024 * 1024;
+  const maxSingleBytes = 8 * 1024 * 1024;
+
+  const downloadNext = async () => {
+    while (nextIndex < pending.length && totalBytes < maxTotalBytes && Date.now() < deadline) {
+      const block = pending[nextIndex];
+      nextIndex += 1;
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        Math.max(500, Math.min(5_000, deadline - Date.now()))
+      );
+      try {
+        const response = await fetch(block.src, {
+          headers: {
+            Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            Referer: safeHttpUrl(sourceUrl) || block.src,
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
+          },
+          redirect: "follow",
+          signal: controller.signal
+        });
+        if (!response.ok) continue;
+        const declaredLength = Number(response.headers.get("content-length") || 0);
+        if (declaredLength > maxSingleBytes) continue;
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (!buffer.length || buffer.length > maxSingleBytes || totalBytes + buffer.length > maxTotalBytes) continue;
+        const mime = detectedImageMime(response.headers.get("content-type"), block.src, buffer);
+        if (!mime) continue;
+        block.dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+        totalBytes += buffer.length;
+        downloaded += 1;
+      } catch (_error) {
+        // The document writer can still ask Feishu to fetch the original URL.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(6, pending.length) }, downloadNext));
+  return { attempted: pending.length, downloaded, failed: pending.length - downloaded };
 }
 
 function isSeparatorLine(value) {
@@ -780,7 +984,7 @@ function removeMenuRuns(blocks) {
   };
 
   blocks.forEach((block, index) => {
-    if (["image", "table"].includes(block.type) || !isMenuLikeBlock(block)) {
+    if (["image", "table", "formula"].includes(block.type) || !isMenuLikeBlock(block)) {
       finish(index);
       return;
     }
@@ -805,7 +1009,7 @@ function removeMenuRuns(blocks) {
     const separator = block.text && isSeparatorLine(block.text);
     const shortLabel =
       block.text && block.text.length <= 20 && !/[。！？.!?；;，,：:]/.test(block.text);
-    if (["image", "table"].includes(block.type) || (!separator && !shortLabel)) {
+    if (["image", "table", "formula"].includes(block.type) || (!separator && !shortLabel)) {
       finishDelimited(index);
       return;
     }
@@ -826,6 +1030,7 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
     "code",
     "list_item",
     "caption",
+    "formula",
     "image",
     "table"
   ]);
@@ -848,6 +1053,7 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
         type,
         src,
         alt: normalizeBlockText(source.alt),
+        caption: normalizeBlockText(source.caption),
         width,
         height,
         ...(dataUrl ? { dataUrl } : {})
@@ -867,7 +1073,9 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
       text,
       level: Math.min(6, Math.max(1, Number(source.level || 2))),
       ordered: Boolean(source.ordered),
-      linkDensity: Math.min(1, Math.max(0, Number(source.linkDensity || 0)))
+      language: String(source.language || "").toLowerCase().replace(/[^a-z0-9+#.-]/g, "").slice(0, 24),
+      linkDensity: Math.min(1, Math.max(0, Number(source.linkDensity || 0))),
+      align: ["left", "center", "right"].includes(source.align) ? source.align : ""
     });
   }
 
@@ -881,7 +1089,7 @@ function cleanArticleBlocks(payload, title = normalizeTitle(payload)) {
   });
 
   return removeMenuRuns(withoutDuplicateTitle)
-    .filter((block) => ["image", "table"].includes(block.type) || !isSeparatorLine(block.text))
+    .filter((block) => ["image", "table", "formula"].includes(block.type) || !isSeparatorLine(block.text))
     .slice(0, 800);
 }
 
@@ -1010,23 +1218,41 @@ function inferTags(payload) {
     if (fallback.length >= 2 && fallback.length <= MAX_TAG_LENGTH) tags.push(fallback);
   }
 
-  return tags.length ? tags.slice(0, MAX_TAG_COUNT) : ["待整理"];
+  return tags.slice(0, MAX_TAG_COUNT);
 }
 
-function fallbackSummary(title, body) {
+function fallbackSummary(title, body, tags) {
   const source = normalizeBlockText(body);
-  const sentences = source
-    .split(/(?<=[。！？!?；;])\s*/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const selected = [];
-  let length = 0;
-  for (const sentence of sentences) {
-    if (length >= 160 || selected.length >= 3) break;
-    selected.push(sentence);
-    length += sentence.length;
+  const topicText = tags.length ? tags.join("、") : "文章核心事项";
+  const safeTitle = truncate(normalizeBlockText(title), 70);
+  let materialType = "综合材料";
+  let dimensionText = "背景、核心事项、主要观点和可能影响";
+  if (/(?:通知|意见|办法|规定|方案|规划|批复|公告|条例)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
+    materialType = "政策或制度性材料";
+    dimensionText = "制定背景、适用对象、核心举措、执行安排和实施影响";
+  } else if (/(?:案例|经验|做法|成效|实践)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
+    materialType = "案例或实践材料";
+    dimensionText = "问题背景、具体做法、实施过程、实际成效和可借鉴经验";
+  } else if (/(?:研究|报告|观察|调查|评估|分析)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
+    materialType = "研究或分析材料";
+    dimensionText = "研究对象、主要观点、论证脉络、关键发现和结论启示";
+  } else if (/(?:发布|举行|启动|入选|动态|消息|新闻)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
+    materialType = "新闻或动态材料";
+    dimensionText = "事件背景、主要进展、参与主体、重点信息和后续影响";
   }
-  return truncate(selected.join("") || normalizeBlockText(title), 220);
+  const featureText = [
+    /\d/.test(source) ? "正文包含时间、数量或其他可核验信息，摘要仅概括其作用而不直接复制数据段落。" : "摘要着重呈现正文的主题关系和逻辑重点。",
+    /(?:应当|必须|要求|实施|推进|建立|完善)/.test(source)
+      ? "材料具有明确的行动或执行导向，需重点理解各项举措之间的衔接关系。"
+      : "材料的信息价值主要体现在对核心事项的集中说明与结构化呈现。"
+  ].join("");
+  const summary = [
+    `本篇${materialType}围绕“${safeTitle}”展开，核心主题集中在${topicText}。`,
+    `内容主要从${dimensionText}等方面进行说明，并将分散信息归纳为相互关联的要点。`,
+    featureText,
+    `整体来看，阅读时应重点把握${topicText}之间的关系，以及其对相关对象、业务场景或后续实施的实际意义。`
+  ].join("");
+  return summary.slice(0, MAX_SUMMARY_LENGTH);
 }
 
 function normalizeAiTag(value) {
@@ -1066,17 +1292,70 @@ function supplementalTags(payload) {
   return rules.filter(([, pattern]) => pattern.test(text)).map(([tag]) => tag);
 }
 
+function contentKeywordTags(payload, body) {
+  const title = normalizeTitle(payload);
+  const source = `${title}\n${normalizeBlockText(body)}`;
+  const blocked = new Set([
+    "内容", "相关", "有关", "关于", "进行", "通过", "主要", "其中", "以及", "本文",
+    "文章", "材料", "情况", "问题", "方面", "工作", "政策", "资料", "技术", "报告",
+    "研究", "分析", "新闻", "发布", "通知", "意见", "方案", "办法", "规定"
+  ]);
+  const scores = new Map();
+  const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
+  for (const item of segmenter.segment(source)) {
+    if (!item.isWordLike) continue;
+    const word = item.segment.replace(/[^\p{Script=Han}A-Za-z0-9]/gu, "");
+    if (word.length < 2 || word.length > MAX_TAG_LENGTH || blocked.has(word) || /^\d+$/.test(word)) continue;
+    const count = source.split(word).length - 1;
+    scores.set(word, (scores.get(word) || 0) + count * 2 + (title.includes(word) ? 6 : 0));
+  }
+  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
+  return ranked.map(([word]) => word);
+}
+
+function contentFallbackFragments(payload, body) {
+  const source = `${normalizeTitle(payload)}\n${normalizeBlockText(body)}`;
+  const fragments = [];
+  for (const match of source.matchAll(/[\p{Script=Han}]{2,}/gu)) {
+    const phrase = match[0]
+      .replace(/^(?:关于|通过|进行|加强|推进|完善|开展|实施)/, "")
+      .replace(/(?:通知|意见|方案|办法|规定|报告|文章|材料)$/, "");
+    if (phrase.length < 2) continue;
+    const candidates = phrase.length <= MAX_TAG_LENGTH
+      ? [phrase]
+      : [phrase.slice(-MAX_TAG_LENGTH), phrase.slice(0, MAX_TAG_LENGTH)];
+    for (const candidate of candidates) {
+      if (normalizeAiTag(candidate) && !fragments.includes(candidate)) fragments.push(candidate);
+    }
+  }
+  return fragments;
+}
+
+function summaryCopiesSource(summary, body) {
+  const compactSummary = normalizeBlockText(summary).replace(/[\s\p{P}\p{S}]/gu, "");
+  const compactBody = normalizeBlockText(body).replace(/[\s\p{P}\p{S}]/gu, "");
+  if (compactSummary.length < 24 || compactBody.length < 24) return false;
+  for (let index = 0; index <= compactSummary.length - 24; index += 4) {
+    if (compactBody.includes(compactSummary.slice(index, index + 24))) return true;
+  }
+  return false;
+}
+
 function normalizeAiEnrichment(value, payload, body) {
-  const summary = truncate(normalizeBlockText(value?.summary), 220) || fallbackSummary(normalizeTitle(payload), body);
   const tags = [];
   const add = (valueToAdd) => {
     const tag = normalizeAiTag(valueToAdd);
     if (!tag || tags.some((item) => item === tag || item.includes(tag) || tag.includes(item))) return;
     tags.push(tag);
   };
+  const contentPayload = { ...payload, text: body, description: "" };
   for (const tag of Array.isArray(value?.tags) ? value.tags : []) add(tag);
-  for (const tag of inferTags(payload)) add(tag);
-  for (const tag of supplementalTags(payload)) add(tag);
+  for (const tag of inferTags(contentPayload)) add(tag);
+  for (const tag of supplementalTags(contentPayload)) add(tag);
+  for (const tag of contentKeywordTags(contentPayload, body)) {
+    if (tags.length >= MIN_TAG_COUNT) break;
+    add(tag);
+  }
 
   if (tags.length < MIN_TAG_COUNT) {
     const titleTag = normalizeTitle(payload)
@@ -1085,8 +1364,24 @@ function normalizeAiEnrichment(value, payload, body) {
       .slice(0, MAX_TAG_LENGTH);
     add(titleTag);
   }
-  if (tags.length < MIN_TAG_COUNT) add("待人工复核");
-  return { summary, tags: tags.slice(0, MAX_TAG_COUNT), source: value?.source || "fallback" };
+  for (const tag of contentFallbackFragments(contentPayload, body)) {
+    if (tags.length >= MIN_TAG_COUNT) break;
+    add(tag);
+  }
+  const finalTags = tags.slice(0, MAX_TAG_COUNT);
+  const candidateSummary = normalizeBlockText(value?.summary).slice(0, MAX_SUMMARY_LENGTH);
+  const aiSummaryIsValid =
+    candidateSummary.length >= MIN_SUMMARY_LENGTH &&
+    candidateSummary.length <= MAX_SUMMARY_LENGTH &&
+    !summaryCopiesSource(candidateSummary, body);
+  const summary = aiSummaryIsValid
+    ? candidateSummary
+    : fallbackSummary(normalizeTitle(payload), body, finalTags);
+  return {
+    summary,
+    tags: finalTags,
+    source: aiSummaryIsValid ? value?.source || "ai" : "fallback"
+  };
 }
 
 async function fetchJsonWithTimeout(url, options = {}) {
@@ -1115,8 +1410,9 @@ function parseAiJson(value) {
 function aiPrompt(payload, body) {
   return [
     "你是中文网页归档编辑。请仅返回 JSON，不要解释。",
-    "任务：用一段话准确概括正文，并提取 2 至 3 个突出核心对象、政策主题或业务事项的标签。",
-    "要求：摘要 80 至 180 个汉字；标签每个 2 至 5 个汉字；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化标签；不要把网站名当标签。",
+    "任务：根据清洗后的正文重新组织一段内容摘要，并仅从该内容提取 2 至 3 个突出核心对象、主题或关键事项的标签。",
+    "摘要要求：100 至 200 个汉字；必须使用自己的表述归纳重点；不得复制原文完整句子，不得连续照抄原文超过 20 个字；不要写‘本文主要介绍了’一类空泛开头。",
+    "标签要求：必须为 2 至 3 个，每个 2 至 5 个字；只根据正文主题生成；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化词；不要使用网站名、发布单位或状态词作为标签。",
     '返回格式：{"summary":"...","tags":["...","..."]}',
     `标题：${normalizeTitle(payload)}`,
     `发布单位：${normalizeBlockText(payload.publisher) || "未识别"}`,
@@ -1147,7 +1443,7 @@ async function requestOllamaEnrichment(payload, body) {
       stream: false,
       format: "json",
       think: false,
-      options: { temperature: 0.15, num_predict: 420 }
+      options: { temperature: 0.2, num_predict: 680 }
     })
   });
   return { ...parseAiJson(result?.response), source: "ollama" };
@@ -1273,7 +1569,7 @@ function buildClipMetadata(payload, tags, summary = "") {
     publishedAt: publication.value,
     publishedDisplay: publication.display,
     publisher,
-    summary: truncate(normalizeBlockText(summary), 220)
+    summary: normalizeBlockText(summary).slice(0, MAX_SUMMARY_LENGTH)
   };
 }
 
@@ -1292,6 +1588,7 @@ function prepareEmbeddedImages(blocks) {
         buffer,
         fileName: `image-${String(index + 1).padStart(3, "0")}.${extension}`,
         placeholder,
+        caption: normalizeBlockText(block.caption || block.alt),
         width: Math.round(Number(block.width || 0)),
         height: Math.round(Number(block.height || 0))
       });
@@ -1353,7 +1650,7 @@ function buildDocXml(title, blocks, metadata = {}) {
   const publisher = metadata.publisher || "未识别";
   const summary = normalizeBlockText(metadata.summary);
   const content = [
-    `<title>${escapeXml(title)}</title>`,
+    `<title align="center">${escapeXml(title)}</title>`,
     '<callout background-color="light-blue" border-color="blue">',
     `<p><b>发布时间：</b>${escapeXml(publishedDisplay)}</p>`,
     `<p><b>发布单位：</b>${escapeXml(publisher)}</p>`,
@@ -1389,10 +1686,11 @@ function buildDocXml(title, blocks, metadata = {}) {
 
     if (block.type === "image") {
       if (block.placeholder) {
-        content.push(`<p>${escapeXml(block.placeholder)}</p>`);
+        content.push(`<p align="center">${escapeXml(block.placeholder)}</p>`);
       } else {
+        const caption = normalizeBlockText(block.caption || block.alt);
         content.push(
-          `<img href="${escapeXmlAttribute(block.src)}" name="${escapeXmlAttribute(imageName(block))}"/>`
+          `<p align="center"><img href="${escapeXmlAttribute(block.src)}" name="${escapeXmlAttribute(imageName(block))}"${caption ? ` caption="${escapeXmlAttribute(caption)}"` : ""}/></p>`
         );
       }
     } else if (block.type === "table") {
@@ -1400,15 +1698,24 @@ function buildDocXml(title, blocks, metadata = {}) {
       if (table) content.push(table);
     } else if (block.type === "heading") {
       const level = Math.min(4, Math.max(2, block.level || 2));
-      content.push(`<h${level}>${escapeXml(block.text)}</h${level}>`);
+      const alignment = block.align && block.align !== "left" ? ` align="${block.align}"` : "";
+      content.push(`<h${level}${alignment}>${escapeXml(block.text)}</h${level}>`);
     } else if (block.type === "quote") {
       content.push(`<blockquote>${escapeXml(block.text)}</blockquote>`);
     } else if (block.type === "code") {
-      content.push(`<pre><code>${escapeXml(block.text)}</code></pre>`);
+      const language = block.language ? ` lang="${escapeXmlAttribute(block.language)}"` : "";
+      content.push(`<pre${language}><code>${escapeXml(block.text)}</code></pre>`);
+    } else if (block.type === "formula") {
+      content.push(`<p align="center"><latex>${escapeXml(block.text)}</latex></p>`);
     } else if (block.type === "caption") {
       content.push(`<p align="center"><em>${escapeXml(block.text)}</em></p>`);
     } else {
-      content.push(`<p>${escapeXml(block.text)}</p>`);
+      const aligned = block.align === "center" || block.align === "right";
+      content.push(
+        aligned
+          ? `<p align="${block.align}">${escapeXml(block.text)}</p>`
+          : `<p>${BODY_PARAGRAPH_INDENT}${escapeXml(block.text)}</p>`
+      );
     }
   }
   flushList();
@@ -1444,6 +1751,8 @@ async function insertEmbeddedImages(docToken, assets) {
       ];
       if (asset.width > 0) mediaArgs.push("--width", String(asset.width));
       if (asset.height > 0) mediaArgs.push("--height", String(asset.height));
+      if (asset.caption) mediaArgs.push("--caption", asset.caption);
+      mediaArgs.push("--align", "center");
       mediaArgs.push("--as", "user", "--format", "json");
       await runLark(mediaArgs, undefined, { cwd: temporaryDirectory });
 
@@ -1560,6 +1869,7 @@ async function createRecord(base, doc, title, body, metadata) {
     findDeep(result, (item) => Boolean(item.record_id || item.record_id_list)) ||
     result.data ||
     result;
+  invalidateClipRecordCache(base);
   return {
     id: record.record_id || record.record_id_list?.[0] || ""
   };
@@ -1592,6 +1902,8 @@ function extractRecordPage(result) {
   const recordIds = Array.isArray(page?.record_id_list) ? page.record_id_list : [];
   const fields = Array.isArray(page?.fields) ? page.fields : [];
   const linkIndex = fields.indexOf("飞书文档链接");
+  const sourceIndex = fields.indexOf("原网页链接");
+  const titleIndex = fields.indexOf("标题");
   const records = [];
 
   for (let index = 0; index < Math.max(rows.length, recordIds.length); index += 1) {
@@ -1602,7 +1914,24 @@ function extractRecordPage(result) {
       ? row[linkIndex >= 0 ? linkIndex : 0]
       : row?.fields?.["飞书文档链接"] ?? row?.["飞书文档链接"];
     const docUrl = extractCellUrl(rawLink);
-    if (recordId && docUrl) records.push({ recordId, docUrl });
+    const rawSource = Array.isArray(row)
+      ? row[sourceIndex]
+      : row?.fields?.["原网页链接"] ?? row?.["原网页链接"];
+    const rawTitle = Array.isArray(row)
+      ? row[titleIndex]
+      : row?.fields?.["标题"] ?? row?.["标题"];
+    const sourceUrl = extractCellUrl(rawSource);
+    const title = normalizeBlockText(
+      typeof rawTitle === "string" ? rawTitle : rawTitle?.text || rawTitle?.value
+    );
+    if (recordId && docUrl) {
+      records.push({
+        recordId,
+        docUrl,
+        ...(sourceUrl ? { sourceUrl } : {}),
+        ...(title ? { title } : {})
+      });
+    }
   }
 
   return {
@@ -1610,6 +1939,71 @@ function extractRecordPage(result) {
     count: Math.max(rows.length, recordIds.length),
     hasMore: Boolean(page?.has_more)
   };
+}
+
+async function listAllClipRecordDetails(base) {
+  const records = [];
+  let offset = 0;
+
+  while (true) {
+    const result = await runLark([
+      "base",
+      "+record-list",
+      "--base-token",
+      base.token,
+      "--table-id",
+      base.tableId,
+      "--field-id",
+      "标题",
+      "--field-id",
+      "原网页链接",
+      "--field-id",
+      "飞书文档链接",
+      "--offset",
+      String(offset),
+      "--limit",
+      "200",
+      "--as",
+      "user",
+      "--format",
+      "json"
+    ]);
+    const page = extractRecordPage(result);
+    records.push(...page.records);
+    if (!page.hasMore) break;
+    if (!page.count) throw new Error("多维表格分页返回异常，已停止查询");
+    offset += page.count;
+  }
+  return records;
+}
+
+async function cachedClipRecordDetails(base) {
+  const key = `${base.token}\u0000${base.tableId}`;
+  const cached = clipRecordCache.get(key);
+  if (cached?.records && cached.expiresAt > Date.now()) return cached.records;
+  if (cached?.promise) return cached.promise;
+  const promise = listAllClipRecordDetails(base)
+    .then((records) => {
+      clipRecordCache.set(key, { records, expiresAt: Date.now() + 30_000 });
+      return records;
+    })
+    .catch((error) => {
+      clipRecordCache.delete(key);
+      throw error;
+    });
+  clipRecordCache.set(key, { promise, expiresAt: 0 });
+  return promise;
+}
+
+function invalidateClipRecordCache(base) {
+  clipRecordCache.delete(`${base.token}\u0000${base.tableId}`);
+}
+
+async function findExistingClip(base, rawUrl) {
+  const wanted = normalizeComparableUrl(rawUrl);
+  if (!wanted) return null;
+  const records = await cachedClipRecordDetails(base);
+  return records.find((record) => normalizeComparableUrl(record.sourceUrl) === wanted) || null;
 }
 
 async function listAllClipRecords(base) {
@@ -1809,10 +2203,11 @@ async function deleteClipDoc(docToken) {
 
 async function syncDeletionPairsOnce() {
   const workspace = await ensureWorkspace();
-  const records = await listAllClipRecords(workspace.base);
+  const defaultKey = `${workspace.base.token}\u0000${workspace.base.tableId}`;
+  const defaultRecords = await listAllClipRecords(workspace.base);
 
   const pairs = await withPairRegistry((registry) => {
-    for (const [recordId, docUrl] of records) {
+    for (const [recordId, docUrl] of defaultRecords) {
       const docToken = docTokenFromUrl(docUrl);
       if (!docToken || registry.pairs[recordId]) continue;
       registry.pairs[recordId] = newPair({
@@ -1826,17 +2221,39 @@ async function syncDeletionPairsOnce() {
     return Object.values(registry.pairs).map((pair) => ({ ...pair }));
   });
 
+  const bases = new Map([[defaultKey, workspace.base]]);
+  for (const pair of pairs) {
+    if (!pair.baseToken || !pair.tableId) continue;
+    const key = `${pair.baseToken}\u0000${pair.tableId}`;
+    if (!bases.has(key)) bases.set(key, { token: pair.baseToken, tableId: pair.tableId });
+  }
+  const recordsByBase = new Map([[defaultKey, defaultRecords]]);
+  const errors = [];
+  for (const [key, base] of bases) {
+    if (key === defaultKey) continue;
+    try {
+      recordsByBase.set(key, await listAllClipRecords(base));
+    } catch (err) {
+      errors.push({ baseToken: base.token, error: err.message });
+    }
+  }
+
   const docTokens = [...new Set(pairs.map((pair) => pair.docToken).filter(Boolean))];
   const docStates = await getDocStates(docTokens);
-  const evaluations = pairs.map((pair) => ({
-    original: pair,
-    ...evaluatePairState(pair, {
-      recordExists: records.has(pair.recordId),
-      docState: docStates.get(pair.docToken) || "unknown"
-    })
-  }));
+  const evaluations = pairs.map((pair) => {
+    const key = `${pair.baseToken}\u0000${pair.tableId}`;
+    const records = recordsByBase.get(key);
+    if (!records) return { original: pair, pair: { ...pair }, action: "none", base: null };
+    return {
+      original: pair,
+      ...evaluatePairState(pair, {
+        recordExists: records.has(pair.recordId),
+        docState: docStates.get(pair.docToken) || "unknown"
+      }),
+      base: bases.get(key)
+    };
+  });
   const completed = new Set();
-  const errors = [];
   let deletedDocs = 0;
   let deletedRecords = 0;
 
@@ -1847,7 +2264,7 @@ async function syncDeletionPairsOnce() {
         deletedDocs += 1;
         completed.add(evaluation.pair.recordId);
       } else if (evaluation.action === "delete_record") {
-        await deleteClipRecord(workspace.base, evaluation.pair.recordId);
+        await deleteClipRecord(evaluation.base, evaluation.pair.recordId);
         deletedRecords += 1;
         completed.add(evaluation.pair.recordId);
       } else if (evaluation.action === "forget") {
@@ -1890,16 +2307,58 @@ function syncDeletionPairs() {
   return syncInFlight;
 }
 
+function stageError(error, code, stage, hint) {
+  if (error instanceof ClipError) return error;
+  const message = String(error?.message || error || "未知错误");
+  if (/auth|unauthori|permission|access token|999916|999914|20029/i.test(message)) {
+    return new ClipError("FEISHU_AUTH_INVALID", "飞书授权已失效或权限不足", {
+      stage,
+      status: 401,
+      hint: "请运行 lark-cli auth login --recommend 重新授权后再试。",
+      cause: error
+    });
+  }
+  return new ClipError(code, message, { stage, hint, cause: error });
+}
+
 async function handleClip(payload) {
-  if (!payload || !payload.url) throw new Error("缺少网页 URL");
-  const workspace = await ensureWorkspace();
+  if (!payload || !payload.url) {
+    throw new ClipError("PAGE_UNREADABLE", "未能读取当前网页地址", {
+      stage: "extract",
+      status: 400,
+      hint: "请在普通 http 或 https 网页中使用扩展。"
+    });
+  }
+  let workspace;
+  try {
+    workspace = await ensureWorkspace(payload.preferences);
+  } catch (error) {
+    throw stageError(error, "WORKSPACE_UNAVAILABLE", "workspace", "请检查本机服务、飞书授权和云盘权限。");
+  }
   const title = normalizeTitle(payload);
   const blocks = cleanArticleBlocks(payload, title);
+  const remoteImages = await hydrateRemoteImages(blocks, payload.url);
   const body = blocksToPlainText(blocks);
+  if (!body && !blocks.some((block) => ["image", "table"].includes(block.type))) {
+    throw new ClipError("ARTICLE_EMPTY", "未识别到可剪存的正文", {
+      stage: "extract",
+      status: 422,
+      hint: "页面可能尚未加载完成、需要登录，或属于浏览器保护页面。"
+    });
+  }
   const enrichment = await enrichContent(payload, body);
   const metadata = buildClipMetadata(payload, enrichment.tags, enrichment.summary);
-  await ensureTagOptions(workspace.base, metadata.tags);
-  const doc = await createDoc(workspace.folder.token, title, blocks, metadata);
+  try {
+    await ensureTagOptions(workspace.base, metadata.tags);
+  } catch (error) {
+    throw stageError(error, "BASE_SCHEMA_FAILED", "base_schema", "请检查多维表格字段类型和编辑权限。");
+  }
+  let doc;
+  try {
+    doc = await createDoc(workspace.folder.token, title, blocks, metadata);
+  } catch (error) {
+    throw stageError(error, "DOC_WRITE_FAILED", "document", "云文档创建或图片上传失败，请稍后重试。");
+  }
   let record;
   try {
     const recordBody = metadata.summary ? `内容摘要：${metadata.summary}\n\n${body}` : body;
@@ -1915,12 +2374,13 @@ async function handleClip(payload) {
     if (!record?.id && doc.token) {
       await deleteClipDoc(doc.token).catch(() => {});
     }
-    throw err;
+    throw stageError(err, "BASE_WRITE_FAILED", "base_record", "多维表格记录写入失败，已回滚本次云文档。");
   }
   return {
     ok: true,
-    folderName: FOLDER_NAME,
-    baseName: BASE_NAME,
+    folderName: workspace.preferences.folderName,
+    folderPath: workspace.preferences.folderPath,
+    baseName: workspace.preferences.baseName,
     docUrl: doc.url,
     baseUrl: workspace.base.url,
     recordId: record.id,
@@ -1928,8 +2388,37 @@ async function handleClip(payload) {
     tags: metadata.tags,
     summary: metadata.summary,
     aiSource: enrichment.source,
-    publishedAt: metadata.publishedDisplay
+    publishedAt: metadata.publishedDisplay,
+    warnings: remoteImages.failed
+      ? [`${remoteImages.failed} 张图片由飞书按原网址尝试获取`]
+      : []
   };
+}
+
+async function handleLookup(payload) {
+  if (!payload?.url) {
+    throw new ClipError("PAGE_UNREADABLE", "缺少要查询的网页地址", {
+      stage: "lookup",
+      status: 400
+    });
+  }
+  let workspace;
+  try {
+    workspace = await ensureWorkspace(payload.preferences);
+    const record = await findExistingClip(workspace.base, payload.url);
+    return {
+      ok: true,
+      exists: Boolean(record),
+      ...(record ? {
+        recordId: record.recordId,
+        title: record.title || "已剪存网页",
+        docUrl: record.docUrl,
+        baseUrl: workspace.base.url
+      } : {})
+    };
+  } catch (error) {
+    throw stageError(error, "DUPLICATE_LOOKUP_FAILED", "lookup", "跨设备查重暂时不可用，不影响继续剪存。");
+  }
 }
 
 function requestOrigin(req) {
@@ -2012,9 +2501,34 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/folders") {
+      try {
+        const result = await listDriveFolders({
+          parentToken: url.searchParams.get("parent_token") || "",
+          refresh: url.searchParams.get("refresh") === "1"
+        });
+        sendJson(req, res, 200, { ok: true, ...result });
+      } catch (error) {
+        throw stageError(
+          error,
+          "FOLDER_LIST_FAILED",
+          "folder_list",
+          "请确认本机配套服务已启动，并重新完成飞书用户授权。"
+        );
+      }
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/clip") {
       const payload = await readJson(req);
       const result = await handleClip(payload);
+      sendJson(req, res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/lookup") {
+      const payload = await readJson(req);
+      const result = await handleLookup(payload);
       sendJson(req, res, 200, result);
       return;
     }
@@ -2027,7 +2541,14 @@ const server = createServer(async (req, res) => {
 
     sendJson(req, res, 404, { ok: false, error: "Not found" });
   } catch (err) {
-    sendJson(req, res, 500, { ok: false, error: err.message });
+    const status = err instanceof ClipError ? err.status : 500;
+    sendJson(req, res, status, {
+      ok: false,
+      code: err.code || "INTERNAL_ERROR",
+      stage: err.stage || "unknown",
+      error: err.message,
+      hint: err.hint || "请查看本机服务日志后重试。"
+    });
   }
 });
 
@@ -2058,15 +2579,21 @@ export {
   cleanArticleBlocks,
   cleanArticleText,
   docTokenFromUrl,
+  detectedImageMime,
   evaluatePairState,
   extractRecordPage,
   getDocStates,
+  hydrateRemoteImages,
   inferTags,
   isAllowedRequestOrigin,
   isNoiseLine,
+  listDriveFolders,
   mergeTagOptions,
+  normalizeComparableUrl,
+  normalizePreferences,
   normalizeAiEnrichment,
   normalizePublishedAt,
+  normalizeFolderParentToken,
   normalizeTitle,
   recordExistsFromGet,
   removeMenuRuns,

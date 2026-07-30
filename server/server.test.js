@@ -6,6 +6,7 @@ const {
   buildClipMetadata,
   buildDocXml,
   cleanArticleBlocks,
+  detectedImageMime,
   docTokenFromUrl,
   evaluatePairState,
   extractRecordPage,
@@ -13,6 +14,9 @@ const {
   isAllowedRequestOrigin,
   mergeTagOptions,
   normalizeAiEnrichment,
+  normalizeComparableUrl,
+  normalizeFolderParentToken,
+  normalizePreferences,
   normalizePublishedAt,
   normalizeTitle,
   recordExistsFromGet,
@@ -68,11 +72,12 @@ test("heuristic tags are content-specific and limited to three short tags", () =
 test("AI enrichment keeps a useful summary and two to three short focused tags", () => {
   const payload = {
     articleTitle: "全国就业公共服务地图发布",
-    text: "全国就业公共服务地图汇集就业服务机构、零工市场和招聘活动信息。"
+    text: "全国就业公共服务地图汇集就业服务机构、零工市场和招聘活动信息，覆盖多类群体与用人单位的查询需求。"
   };
+  const rewrittenSummary = "该服务将分散在各地的公共就业资源纳入统一地图入口，使劳动者、用人单位和基层服务人员能够按区域查找机构、岗位与招聘活动。其价值不仅在于集中展示信息，还在于降低求职与招聘两端的搜索成本，帮助用户快速识别附近可用服务。整体上，这一数字化入口强化了就业资源的可达性和匹配效率，也为后续更新服务网点、完善供需对接提供了更清晰的组织基础。";
   const enrichment = normalizeAiEnrichment(
     {
-      summary: "全国就业公共服务地图整合公共就业机构、零工市场和招聘活动信息，为劳动者及用人单位提供统一、便捷的就业资源查询入口。",
+      summary: rewrittenSummary,
       tags: ["政策", "就业服务", "零工市场", "招聘信息", "公共就业", "数据平台", "额外标签", "待整理"],
       source: "ollama"
     },
@@ -80,7 +85,8 @@ test("AI enrichment keeps a useful summary and two to three short focused tags",
     payload.text
   );
   assert.equal(enrichment.source, "ollama");
-  assert.match(enrichment.summary, /就业资源查询入口/);
+  assert.equal(enrichment.summary, rewrittenSummary);
+  assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
   assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
   assert.ok(enrichment.tags.every((tag) => tag.length <= 5));
   assert.equal(enrichment.tags.includes("政策"), false);
@@ -91,12 +97,30 @@ test("AI enrichment keeps a useful summary and two to three short focused tags",
 test("AI fallback still returns two reviewable tags", () => {
   const enrichment = normalizeAiEnrichment(
     {},
-    { articleTitle: "简短记录", text: "只有一段很短的内容。" },
-    "只有一段很短的内容。"
+    {
+      articleTitle: "公共就业服务平台优化实施方案",
+      text: "方案聚焦就业服务、岗位匹配和基层服务网点建设，要求完善信息归集、实施进度跟踪与服务质量评估。"
+    },
+    "方案聚焦就业服务、岗位匹配和基层服务网点建设，要求完善信息归集、实施进度跟踪与服务质量评估。"
   );
   assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
   assert.ok(enrichment.tags.every((tag) => tag.length <= 5));
+  assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
   assert.equal(enrichment.source, "fallback");
+});
+
+test("verbatim AI summaries are rejected and rewritten locally", () => {
+  const body = "各地将建立统一的企业服务响应机制，通过流程再造、数据共享和部门协同减少重复提交材料，提升政策兑现与诉求办理效率。";
+  const copied = `${body}${body}${body}`.slice(0, 200);
+  const enrichment = normalizeAiEnrichment(
+    { summary: copied, tags: ["企业服务", "数据共享"], source: "ollama" },
+    { articleTitle: "企业服务机制优化", text: body },
+    body
+  );
+  assert.equal(enrichment.source, "fallback");
+  assert.notEqual(enrichment.summary, copied);
+  assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
+  assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
 });
 
 test("tag options are deduplicated and missing content tags are added", () => {
@@ -191,16 +215,32 @@ test("document XML uses the exact article title and preserves basic formatting",
     metadata
   );
 
-  assert.match(xml, /^<title>原始文章标题<\/title>/);
+  assert.match(xml, /^<title align="center">原始文章标题<\/title>/);
   assert.match(xml, /<b>原网页链接：<\/b><a href="https:\/\/example\.com\/articles\/42">/);
   assert.match(xml, /<b>标签：<\/b>政策、案例、资料/);
   assert.match(xml, /<b>发布时间：<\/b>2025-09-12/);
   assert.match(xml, /<b>发布单位：<\/b>示例市发展和改革委员会/);
   assert.match(xml, /<b>内容摘要：<\/b>这是由 AI 生成并校验后的内容摘要/);
   assert.match(xml, /<h2>分节标题<\/h2>/);
-  assert.match(xml, /<p>正文 A &amp; B<\/p>/);
+  assert.match(xml, /<p>　　正文 A &amp; B<\/p>/);
   assert.match(xml, /<ul><li>第一项<\/li><li>第二项<\/li><\/ul>/);
   assert.match(xml, /<blockquote>引用内容<\/blockquote>/);
+});
+
+test("document paragraphs use Chinese indentation while source alignment is preserved", () => {
+  const xml = buildDocXml("排版测试", [
+    { type: "paragraph", text: "普通正文" },
+    { type: "paragraph", text: "居中落款", align: "center" },
+    { type: "paragraph", text: "右对齐日期", align: "right" },
+    { type: "formula", text: "E = mc^2" },
+    { type: "image", src: "https://example.com/chart.png", alt: "示意图" }
+  ]);
+  assert.match(xml, /<title align="center">排版测试<\/title>/);
+  assert.match(xml, /<p>　　普通正文<\/p>/);
+  assert.match(xml, /<p align="center">居中落款<\/p>/);
+  assert.match(xml, /<p align="right">右对齐日期<\/p>/);
+  assert.match(xml, /<p align="center"><latex>E = mc\^2<\/latex><\/p>/);
+  assert.match(xml, /<p align="center"><img href="https:\/\/example\.com\/chart\.png"/);
 });
 
 test("browser-captured images are staged locally for protected source sites", () => {
@@ -221,7 +261,107 @@ test("browser-captured images are staged locally for protected source sites", ()
   const prepared = prepareEmbeddedImages(blocks);
   assert.equal(prepared.assets.length, 1);
   assert.match(prepared.blocks[0].placeholder, /^FEISHU_CLIPPER_IMAGE_[a-f0-9]+$/);
-  assert.match(buildDocXml("受保护图片测试", prepared.blocks), /<p>FEISHU_CLIPPER_IMAGE_[a-f0-9]+<\/p>/);
+  assert.match(buildDocXml("受保护图片测试", prepared.blocks), /<p align="center">FEISHU_CLIPPER_IMAGE_[a-f0-9]+<\/p>/);
+});
+
+test("image bytes override incorrect server MIME declarations", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  assert.equal(detectedImageMime("image/jpeg", "https://example.gov.cn/chart.png", png), "image/png");
+});
+
+test("image captions, code languages, formulas, and GIF data stay structured", () => {
+  const blocks = cleanArticleBlocks({
+    articleTitle: "格式保真测试",
+    blocks: [
+      {
+        type: "image",
+        src: "https://example.com/chart.gif",
+        caption: "图 1：趋势变化",
+        width: 800,
+        height: 450,
+        dataUrl: `data:image/gif;base64,${Buffer.from("gif-bytes").toString("base64")}`
+      },
+      { type: "code", text: "const answer = 42;", language: "javascript" },
+      { type: "formula", text: "E = mc^2" }
+    ]
+  });
+  const prepared = prepareEmbeddedImages(blocks);
+  assert.equal(prepared.assets[0].caption, "图 1：趋势变化");
+  assert.match(prepared.assets[0].fileName, /\.gif$/);
+  const xml = buildDocXml("格式保真测试", prepared.blocks);
+  assert.match(xml, /<pre lang="javascript"><code>const answer = 42;<\/code><\/pre>/);
+  assert.match(xml, /<p align="center"><latex>E = mc\^2<\/latex><\/p>/);
+});
+
+test("remote images carry their caption in the image block", () => {
+  const xml = buildDocXml("图片题注", [
+    {
+      type: "image",
+      src: "https://example.com/photo.jpg",
+      caption: "会议现场",
+      width: 1000,
+      height: 667
+    }
+  ]);
+  assert.match(xml, /<img href="https:\/\/example\.com\/photo\.jpg"[^>]+caption="会议现场"/);
+  assert.doesNotMatch(xml, /<em>会议现场<\/em>/);
+});
+
+test("cross-device duplicate URLs ignore tracking parameters and fragments", () => {
+  assert.equal(
+    normalizeComparableUrl("https://example.com/article/?b=2&utm_source=test&a=1#top"),
+    "https://example.com/article?a=1&b=2"
+  );
+  assert.equal(
+    normalizeComparableUrl("https://example.com/article?a=1&b=2"),
+    "https://example.com/article?a=1&b=2"
+  );
+});
+
+test("destination preferences keep defaults and reject unsafe names", () => {
+  assert.deepEqual(normalizePreferences({}), {
+    folderMode: "managed",
+    folderToken: "",
+    folderName: "飞书剪存",
+    folderPath: "云盘根目录 / 飞书剪存",
+    baseName: "网页剪存库"
+  });
+  assert.deepEqual(normalizePreferences({ folderName: "政策资料", baseName: "政策库" }), {
+    folderMode: "managed",
+    folderToken: "",
+    folderName: "飞书剪存",
+    folderPath: "云盘根目录 / 飞书剪存",
+    baseName: "政策库"
+  });
+  assert.deepEqual(normalizePreferences({
+    folderMode: "existing",
+    folderToken: "KANjfgPiBlqLL4dK6o3cHLspnHC",
+    folderName: "飞书剪存",
+    folderPath: "云盘根目录 / 飞书剪存"
+  }), {
+    folderMode: "existing",
+    folderToken: "KANjfgPiBlqLL4dK6o3cHLspnHC",
+    folderName: "飞书剪存",
+    folderPath: "云盘根目录 / 飞书剪存",
+    baseName: "网页剪存库"
+  });
+  assert.deepEqual(normalizePreferences({ folderName: "../其他目录" }), {
+    folderMode: "managed",
+    folderToken: "",
+    folderName: "飞书剪存",
+    folderPath: "云盘根目录 / 飞书剪存",
+    baseName: "网页剪存库"
+  });
+  assert.throws(() => normalizePreferences({ folderMode: "existing", folderToken: "bad" }), /所选飞书云盘文件夹无效/);
+});
+
+test("folder browsing accepts root and valid folder tokens only", () => {
+  assert.equal(normalizeFolderParentToken(""), "");
+  assert.equal(
+    normalizeFolderParentToken("KANjfgPiBlqLL4dK6o3cHLspnHC"),
+    "KANjfgPiBlqLL4dK6o3cHLspnHC"
+  );
+  assert.throws(() => normalizeFolderParentToken("../bad"), /文件夹标识无效/);
 });
 
 test("sharing controls and editorial credits never enter the saved body", () => {

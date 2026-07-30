@@ -80,7 +80,7 @@ lark-cli auth status
 
 ### 开发者模式安装
 
-商店版本审核期间，可从 GitHub Release 下载 `feishu-clipper-pro-extension-1.0.5.zip` 并解压。
+商店版本审核期间，可从 GitHub Release 下载当前版本的 `feishu-clipper-pro-extension-<版本号>.zip` 并解压。
 
 Chrome：打开 `chrome://extensions`，启用“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 `extension` 目录。
 
@@ -131,3 +131,7 @@ lark-cli auth login --recommend
 ### 页面无法剪存
 
 浏览器内部页面、扩展商店页面和部分受保护页面不允许扩展读取。请在普通 `http://` 或 `https://` 文章页面上使用。
+
+### 修改剪存位置
+
+打开扩展设置后，点击“选择保存文件夹”才会通过当前 `lark-cli` 用户授权读取飞书云盘的一级文件夹。选择目标文件夹后，云文档和多维表格会统一保存到该位置；不选择时自动创建或继续使用 `云盘根目录 / 飞书剪存`。多维表格默认名为“网页剪存库”，名称可修改。扩展不会读取飞书桌面客户端的缓存、密码或登录凭据。

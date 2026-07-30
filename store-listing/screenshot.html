@@ -25,9 +25,10 @@
     th, td { padding: 10px 12px; border: 1px solid #dce1e7; text-align: left; }
     th { background: #f3f6f9; }
     .popup { position: absolute; top: 28px; right: 35px; width: 360px; padding: 16px; border: 1px solid #d8dde4; border-radius: 8px; background: #f7f8fa; box-shadow: 0 14px 34px rgba(32, 39, 48, .18); }
-    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand { position: relative; display: flex; align-items: center; gap: 10px; padding-right: 28px; }
     .brand img { width: 34px; height: 34px; }
     .brand h3 { margin: 0 0 2px; font-size: 18px; letter-spacing: 0; }
+    .settings { position: absolute; top: 0; right: 0; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; color: #667085; font-size: 17px; }
     .status { margin: 0; color: #5f6368; font-size: 13px; }
     .page { margin-top: 14px; padding: 12px; border: 1px solid #dfe3e8; border-radius: 8px; background: #fff; }
     .label { margin-bottom: 6px; color: #6b7280; font-size: 12px; }
@@ -62,7 +63,7 @@
         <table><thead><tr><th>服务事项</th><th>办理方式</th><th>完成时限</th></tr></thead><tbody><tr><td>企业开办</td><td>线上集成办理</td><td>1 个工作日</td></tr><tr><td>政策兑现</td><td>免申即享</td><td>自动匹配</td></tr></tbody></table>
       </article>
       <aside class="popup">
-        <div class="brand"><img src="assets/icon-1024.png" alt="" /><div><h3>飞书剪存pro</h3><p class="status">正在剪存...</p></div></div>
+        <div class="brand"><img src="assets/icon-1024.png" alt="" /><div><h3>飞书剪存pro</h3><p class="status">正在剪存...</p></div><span class="settings">⚙</span></div>
         <section class="page"><div class="label">当前网页</div><div class="title">优化营商环境典型经验做法</div><div class="url">https://example.gov.cn/policy/article</div></section>
         <p class="privacy">仅在点击时读取当前网页，并通过本机服务写入你自己的飞书空间；数据不会发送给插件开发者。<span>隐私说明</span></p>
         <section class="result">已剪存完毕。<br><b>打开飞书云文档</b><br><b>打开网页剪存库</b><br>发布时间：2026-07-18<br>标签：营商环境、企业服务</section>

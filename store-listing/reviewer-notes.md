@@ -17,13 +17,15 @@ The extension depends on the open-source local companion included at https://git
 5. Verify `http://127.0.0.1:8787/health` returns JSON containing `"ok":true`.
 6. Open a public article page and click the extension icon. Clipping starts immediately without another button click.
 7. The popup shows “已剪存完毕” and returns links to the created document and Base library in the reviewer's own Feishu or Lark workspace. The icon displays a green checkmark for the clipped URL.
+8. Open the extension options page to verify that the local companion lists folders accessible through the current Feishu user authorization. Select an existing folder or keep the default managed folder, then verify the Base name and duplicate behavior settings.
+9. Clicking a previously clipped URL checks the Base only after that click and offers the existing document or an explicit “save another copy” action.
 
 No shared test credentials are supplied because the product writes only to the current user's own workspace and the developer has no hosted account system. The official lark-cli guided setup creates or configures the required Feishu application and authorization for the reviewer.
 
 ## Permissions
 
 - `activeTab` and `scripting` are used only after the user clicks the extension icon.
-- `storage` keeps normalized clipped-page URLs and timestamps locally for the checkmark.
+- `storage` keeps normalized clipped-page URLs and timestamps locally for the checkmark, and stores the user's destination and duplicate-handling preferences.
 - `tabs` compares open-tab URLs with that local list; it does not read the browser history database or transmit browsing data.
 - Loopback host access is used only for the local companion.
 - The extension has no broad host permission, background browsing monitor, analytics, advertising, or remote code.

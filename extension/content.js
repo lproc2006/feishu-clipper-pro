@@ -1,9 +1,10 @@
 (() => {
-  const CONTENT_VERSION = "1.0.5";
+  const CONTENT_VERSION = "1.1.5";
   if (globalThis.__FEISHU_FULL_CLIPPER_LOADED__ === CONTENT_VERSION) return;
   globalThis.__FEISHU_FULL_CLIPPER_LOADED__ = CONTENT_VERSION;
 
   const TEXT_BLOCK_SELECTOR = "h1,h2,h3,h4,h5,h6,p,blockquote,pre,li,figcaption";
+  const FORMULA_SELECTOR = "math,[data-tex],.katex,.MathJax";
   const MAX_BLOCKS = 800;
   const MAX_IMAGES = 60;
   const MAX_TABLE_ROWS = 200;
@@ -63,6 +64,9 @@
       image.getAttribute("data-original"),
       image.getAttribute("data-src"),
       image.getAttribute("data-lazy-src"),
+      image.getAttribute("data-original-src"),
+      image.getAttribute("data-actualsrc"),
+      image.getAttribute("data-url"),
       largestSrcsetCandidate(image.getAttribute("data-srcset")),
       largestSrcsetCandidate(image.getAttribute("srcset")),
       image.getAttribute("src")
@@ -147,13 +151,22 @@
     return tokens.some((token) => boilerplateTokens.has(token));
   }
 
+  function meaningfulMediaCount(element) {
+    return [...element.querySelectorAll("img,picture,table,math,.katex,.MathJax")]
+      .filter((media) => {
+        if (media.tagName.toLowerCase() !== "img") return true;
+        return Boolean(bestImageUrl(media));
+      })
+      .length;
+  }
+
   function pruneBoilerplate(root) {
     const candidates = [...root.querySelectorAll("nav,aside,header,footer,div,section,ul,ol")];
     candidates.reverse().forEach((element) => {
       if (!element.isConnected) return;
       const text = normalizeText(element.textContent);
       if (!text) {
-        element.remove();
+        if (!meaningfulMediaCount(element)) element.remove();
         return;
       }
 
@@ -199,18 +212,20 @@
       ".articleBox",
       ".wzcon",
       ".TRS_Editor",
-      ".view-content"
+      ".view-content",
+      "#content"
     ];
     const candidates = [...new Set(root.querySelectorAll(selectors.join(",")))];
     let best = null;
     let bestScore = -Infinity;
     for (const element of candidates) {
       const textLength = normalizeText(element.textContent).length;
-      if (textLength < 120) continue;
+      const mediaCount = meaningfulMediaCount(element);
+      if (textLength < 120 && mediaCount === 0) continue;
       const score =
         textLength +
         element.querySelectorAll("p").length * 100 +
-        element.querySelectorAll("img").length * 35 -
+        mediaCount * 180 -
         elementLinkDensity(element) * textLength * 1.8;
       if (score > bestScore) {
         best = element;
@@ -226,10 +241,10 @@
     let bestScore = -Infinity;
     for (const element of candidates) {
       const textLength = normalizeText(element.textContent).length;
-      if (textLength < 120) continue;
+      const mediaCount = meaningfulMediaCount(element);
+      if (textLength < 120 && mediaCount === 0) continue;
       const paragraphs = element.querySelectorAll("p").length;
-      const images = element.querySelectorAll("img").length;
-      const score = textLength + paragraphs * 80 + images * 35 - elementLinkDensity(element) * textLength * 1.5;
+      const score = textLength + paragraphs * 80 + mediaCount * 180 - elementLinkDensity(element) * textLength * 1.5;
       if (score > bestScore) {
         best = element;
         bestScore = score;
@@ -250,7 +265,8 @@
       return {
         title: "",
         content: explicitArticle.outerHTML,
-        textContent: normalizeText(explicitArticle.textContent)
+        textContent: normalizeText(explicitArticle.textContent),
+        source: "site-adapter"
       };
     }
     if (typeof Readability === "function") {
@@ -260,12 +276,34 @@
           keepClasses: false,
           nbTopCandidates: 8
         }).parse();
-        if (parsed && normalizeText(parsed.textContent).length >= 80) return parsed;
+        if (parsed && normalizeText(parsed.textContent).length >= 80) {
+          return { ...parsed, source: "readability" };
+        }
       } catch (_err) {
         // The scored DOM fallback below handles unusual or partially rendered pages.
       }
     }
-    return findFallbackArticle(clone);
+    return { ...findFallbackArticle(clone), source: "scored-fallback" };
+  }
+
+  function waitForPageSettled() {
+    if (document.readyState === "complete") return Promise.resolve();
+    return new Promise((resolve) => {
+      let quietTimer;
+      const finish = () => {
+        clearTimeout(quietTimer);
+        clearTimeout(maxTimer);
+        observer.disconnect();
+        resolve();
+      };
+      const observer = new MutationObserver(() => {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(finish, 350);
+      });
+      const maxTimer = setTimeout(finish, 2_000);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      quietTimer = setTimeout(finish, 350);
+    });
   }
 
   function readStructuredHeadline() {
@@ -772,13 +810,45 @@
     const width = Number(image.getAttribute("width") || image.naturalWidth || 0);
     const height = Number(image.getAttribute("height") || image.naturalHeight || 0);
     if (width > 0 && height > 0 && (width < 120 || height < 80)) return null;
+    const figure = image.closest("figure");
+    const caption = normalizeText(
+      figure?.querySelector("figcaption")?.textContent ||
+      image.getAttribute("data-caption") ||
+      image.getAttribute("aria-description")
+    );
     return {
       type: "image",
       src,
       alt: normalizeText(image.getAttribute("alt") || image.getAttribute("title")),
+      caption,
       width,
       height
     };
+  }
+
+  function codeLanguage(element) {
+    const identity = [
+      element.getAttribute("data-language"),
+      element.getAttribute("data-lang"),
+      element.className,
+      element.querySelector("code")?.className
+    ].filter(Boolean).join(" ");
+    const match = identity.match(/(?:language|lang)[-_: ]+([a-z0-9+#.-]{1,24})/i);
+    return normalizeText(match?.[1]).toLowerCase();
+  }
+
+  function formulaBlock(element) {
+    if (element.matches("math") && element.parentElement?.closest(".katex, .MathJax")) return null;
+    if (element.matches(".katex, .MathJax") && element.closest("math")) return null;
+    if (element.matches("[data-tex]") && element.parentElement?.closest("[data-tex]")) return null;
+    const text = normalizeText(
+      element.getAttribute("data-tex") ||
+      element.querySelector("annotation[encoding='application/x-tex']")?.textContent ||
+      element.getAttribute("aria-label") ||
+      element.textContent
+    );
+    if (!text || text.length > 5000) return null;
+    return { type: "formula", text };
   }
 
   function normalizeTableColor(value) {
@@ -860,7 +930,7 @@
   }
 
   function extractBlocks(articleRoot) {
-    const nodes = [...articleRoot.querySelectorAll(`${TEXT_BLOCK_SELECTOR},table,img,section,div`)];
+    const nodes = [...articleRoot.querySelectorAll(`${TEXT_BLOCK_SELECTOR},table,img,section,div,${FORMULA_SELECTOR}`)];
     const blocks = [];
     const seenImages = new Set();
 
@@ -869,6 +939,11 @@
       const tag = element.tagName.toLowerCase();
       const containingTable = element.closest("table");
       if (containingTable && containingTable !== element) continue;
+      if (element.matches(FORMULA_SELECTOR)) {
+        const formula = formulaBlock(element);
+        if (formula) blocks.push(formula);
+        continue;
+      }
       if (tag === "table") {
         if (element.parentElement?.closest("table")) continue;
         const table = tableBlock(element);
@@ -893,11 +968,18 @@
 
       const ancestorTextBlock = element.parentElement?.closest(TEXT_BLOCK_SELECTOR);
       if (ancestorTextBlock && ancestorTextBlock !== element) continue;
+      if (tag === "figcaption" && element.closest("figure")?.querySelector("img")) continue;
       const text = normalizeText(element.textContent);
       if (!text) continue;
 
       let type = "paragraph";
-      const block = { type, text, linkDensity: blockLinkDensity(element) };
+      const rawAlignment = String(element.getAttribute("align") || element.style.textAlign || "").toLowerCase();
+      const block = {
+        type,
+        text,
+        linkDensity: blockLinkDensity(element),
+        align: ["left", "center", "right"].includes(rawAlignment) ? rawAlignment : ""
+      };
       if (/^h[1-6]$/.test(tag)) {
         block.type = "heading";
         block.level = Number(tag.slice(1));
@@ -905,6 +987,7 @@
         block.type = "quote";
       } else if (tag === "pre") {
         block.type = "code";
+        block.language = codeLanguage(element);
       } else if (tag === "li") {
         block.type = "list_item";
         block.ordered = element.parentElement?.tagName.toLowerCase() === "ol";
@@ -940,7 +1023,7 @@
     };
 
     blocks.forEach((block, index) => {
-      if (!["image", "table"].includes(block.type) && isMenuLike(block)) {
+      if (!["image", "table", "formula"].includes(block.type) && isMenuLike(block)) {
         if (start < 0) start = index;
         if (!isSeparator(block.text)) menuItems += 1;
       } else {
@@ -968,7 +1051,7 @@
     return blocks.filter((block, index) => {
       if (remove.has(index)) return false;
       if (trailingUnits.has(index)) return false;
-      if (["image", "table"].includes(block.type)) return true;
+      if (["image", "table", "formula"].includes(block.type)) return true;
       const text = normalizeText(block.text);
       if (isSeparator(text) || /^分享到\s*[:：]?\s*$/.test(text)) return false;
       if (/^(?:来源|文章来源|信息来源|作者|编辑|审核|校对|责任编辑|发布机构|发布单位)\s*[:：丨|]/.test(text)) {
@@ -990,13 +1073,21 @@
   async function attachImageData(blocks) {
     let capturedBytes = 0;
     const images = blocks.filter((block) => block.type === "image");
+    const deadline = Date.now() + 15_000;
     let nextIndex = 0;
     const captureNext = async () => {
-      while (nextIndex < images.length && capturedBytes < MAX_CAPTURED_IMAGE_BYTES) {
+      while (
+        nextIndex < images.length &&
+        capturedBytes < MAX_CAPTURED_IMAGE_BYTES &&
+        Date.now() < deadline
+      ) {
         const block = images[nextIndex];
         nextIndex += 1;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10_000);
+        const timeout = setTimeout(
+          () => controller.abort(),
+          Math.max(500, Math.min(6_000, deadline - Date.now()))
+        );
         try {
           const response = await fetch(block.src, {
             credentials: "include",
@@ -1020,10 +1111,18 @@
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, images.length) }, captureNext));
-    return blocks;
+    return {
+      blocks,
+      diagnostics: {
+        total: images.length,
+        captured: images.filter((block) => block.dataUrl).length,
+        remoteFallback: images.filter((block) => !block.dataUrl).length
+      }
+    };
   }
 
   async function buildPayload() {
+    await waitForPageSettled();
     const article = parseReadableArticle();
     const parsed = new DOMParser().parseFromString(`<article>${article.content || ""}</article>`, "text/html");
     const articleRoot = parsed.querySelector("article") || parsed.body;
@@ -1031,7 +1130,7 @@
     const publishedAt = readPublishedAt(title, article);
     const publisher = readPublisher(title);
     const blocks = extractBlocks(articleRoot);
-    await attachImageData(blocks);
+    const imageCapture = await attachImageData(blocks);
     const text = blocks
       .filter((block) => block.text && block.type !== "caption")
       .map((block) => block.text)
@@ -1053,12 +1152,16 @@
       text: text || normalizeText(article.textContent),
       blocks,
       imageCount: blocks.filter((block) => block.type === "image").length,
+      diagnostics: {
+        extraction: article.source || "unknown",
+        images: imageCapture.diagnostics
+      },
       capturedAt: new Date().toISOString()
     };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "FEISHU_FULL_CLIP_EXTRACT_V5") return false;
+    if (!message || message.type !== "FEISHU_FULL_CLIP_EXTRACT_V6") return false;
     buildPayload()
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message || "网页正文提取失败" }));

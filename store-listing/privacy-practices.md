@@ -9,8 +9,8 @@ Archive the current web article, after an explicit user click, into the user's o
 ## Data categories handled
 
 - Website content: yes. Article title, URL, text, image data, table structure, publication date, publisher, generated summary, and tags are required for the clipping feature.
-- Web history: yes, limited to normalized URLs and timestamps for pages the user explicitly clips. This data remains only in browser-local extension storage to display the clipped checkmark; the extension does not read the browser history database or transmit the list to the developer.
-- Authentication information: no. Authentication is handled separately by the official lark-cli on the user's device.
+- Web history: yes, limited to normalized URLs and timestamps for pages the user explicitly clips. This data remains only in browser-local extension storage to display the clipped checkmark; after a user click, the current URL is also compared with the user's own Base library for duplicate detection. The extension does not read the browser history database or transmit the list to the developer.
+- Authentication information: no. Authentication is handled separately by the official lark-cli on the user's device. The folder picker uses that current user authorization and never reads Feishu desktop client credentials.
 - Personally identifiable information: not intentionally collected. If the selected page contains such information, it is processed only as part of the user-requested clipping operation.
 - User activity or analytics: no.
 - Location, health, financial, payment, or communications data: not intentionally collected.
@@ -34,7 +34,7 @@ The use of information received from browser APIs adheres to the Chrome Web Stor
 
 `scripting`: Required to inject the bundled, reviewable article extractor into the active tab. No remote code is downloaded or executed.
 
-`storage`: Required to keep normalized clipped-page URLs and timestamps locally in the current browser so the icon checkmark persists.
+`storage`: Required to keep normalized clipped-page URLs and timestamps locally in the current browser so the icon checkmark persists, and to retain the selected Drive folder identifier and display path, Base name, and duplicate-handling preference.
 
 `tabs`: Required to compare open-tab URLs with the local clipped-page list and update the icon checkmark. It is not used to collect or transmit browsing history.
 

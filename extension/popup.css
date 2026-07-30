@@ -14,6 +14,33 @@ main {
   padding: 16px;
 }
 
+header {
+  position: relative;
+  padding-right: 34px;
+}
+
+.icon-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  color: #5f6368;
+  background: transparent;
+  font-size: 18px;
+  line-height: 30px;
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.icon-button:focus-visible {
+  color: #202124;
+  background: #e8eaed;
+  outline: none;
+}
+
 h1 {
   margin: 0 0 4px;
   font-size: 18px;
@@ -80,6 +107,17 @@ p {
 
 .result a {
   color: #0b57d0;
+}
+
+.result button {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 1px solid #0b57d0;
+  border-radius: 6px;
+  color: #0b57d0;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
 }
 
 .error {
