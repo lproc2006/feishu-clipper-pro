@@ -1,10 +1,7 @@
 const SERVER = "http://127.0.0.1:8787";
-const BUILD_VERSION = "1.1.5";
-const PREFERENCES_KEY = "clipperPreferencesV1";
+const BUILD_VERSION = "1.1.6";
 
-if (chrome.runtime.getManifest().version !== BUILD_VERSION) {
-  chrome.runtime.reload();
-}
+if (chrome.runtime.getManifest().version !== BUILD_VERSION) chrome.runtime.reload();
 
 const statusEl = document.getElementById("status");
 const titleEl = document.getElementById("title");
@@ -33,7 +30,7 @@ function safeLink(value) {
   try {
     const url = new URL(String(value || ""));
     return /^https?:$/.test(url.protocol) ? url.href : "";
-  } catch (_err) {
+  } catch (_error) {
     return "";
   }
 }
@@ -47,22 +44,6 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-async function getPreferences() {
-  const stored = await chrome.storage.sync.get(PREFERENCES_KEY);
-  const value = stored[PREFERENCES_KEY] || {};
-  const folderMode = value.folderMode === "existing" ? "existing" : "managed";
-  return {
-    folderMode,
-    folderToken: folderMode === "existing" ? String(value.folderToken || "").trim() : "",
-    folderName: folderMode === "existing" ? String(value.folderName || "已选文件夹").trim() : "飞书剪存",
-    folderPath: folderMode === "existing"
-      ? String(value.folderPath || value.folderName || "已选文件夹").trim()
-      : "云盘根目录 / 飞书剪存",
-    baseName: String(value.baseName || "网页剪存库").trim(),
-    duplicateBehavior: value.duplicateBehavior === "save_copy" ? "save_copy" : "show_existing"
-  };
-}
-
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !/^https?:\/\//i.test(tab.url || "")) {
@@ -73,74 +54,12 @@ async function getActiveTab() {
   return tab;
 }
 
-async function extractPage(tab) {
-  try {
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V6" });
-    if (response?.error) throw new Error(response.error);
-    return response;
-  } catch (_err) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["vendor/Readability.js", "content.js"]
-      });
-      const response = await chrome.tabs.sendMessage(tab.id, { type: "FEISHU_FULL_CLIP_EXTRACT_V6" });
-      if (response?.error) throw new Error(response.error);
-      return response;
-    } catch (error) {
-      error.code = "PAGE_UNREADABLE";
-      throw error;
-    }
-  }
-}
-
-async function markClipped(tab, url) {
-  await chrome.runtime.sendMessage({
-    type: "FEISHU_CLIP_MARKED",
-    tabId: tab.id,
-    url
-  });
-}
-
-async function postJson(path, payload, timeoutMs = 12_000) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${SERVER}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok) {
-      const error = new Error(data.error || `本机服务返回异常：${response.status}`);
-      error.code = data.code || "SERVICE_ERROR";
-      error.hint = data.hint || "";
-      throw error;
-    }
-    return data;
-  } catch (error) {
-    if (error.name === "AbortError") {
-      const timeoutError = new Error("本机服务响应超时");
-      timeoutError.code = "SERVICE_TIMEOUT";
-      throw timeoutError;
-    }
-    if (error instanceof TypeError) {
-      error.code = "SERVICE_UNAVAILABLE";
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function failureMessage(error) {
   const guidance = {
-    PAGE_UNREADABLE: "页面无法读取。请在普通网页中使用，并等待正文加载完成。",
+    PAGE_UNREADABLE: "页面无法读取。原网页可能已关闭、跳转，或属于浏览器保护页面。",
     ARTICLE_EMPTY: "正文识别失败。页面可能需要登录、滚动加载或尚未显示正文。",
     SERVICE_UNAVAILABLE: "本机配套服务未连接。请确认服务已启动。",
-    SERVICE_TIMEOUT: "本机服务处理超时。请稍后重试，或检查 AI 模型和飞书网络。",
+    SERVICE_TIMEOUT: "本机服务处理超时。任务会保留，可重新点击图标查看进度。",
     FEISHU_AUTH_INVALID: "飞书授权已失效或权限不足。",
     DOC_WRITE_FAILED: "云文档创建或图片上传失败。",
     BASE_SCHEMA_FAILED: "多维表格字段配置异常。",
@@ -173,19 +92,29 @@ function renderSuccess(data) {
   setStatus("已剪存完毕");
 }
 
-async function savePage(tab, preferences) {
-  setStatus("正在读取正文...");
-  const payload = await extractPage(tab);
-  payload.preferences = preferences;
-  titleEl.textContent = payload.title || tab.title || "未命名网页";
-  urlEl.textContent = payload.url || tab.url || "";
-  setStatus("正在写入飞书...");
-  const data = await postJson("/clip", payload, 180_000);
-  await markClipped(tab, payload.url || tab.url).catch(() => {});
-  renderSuccess(data);
+async function sendMessage(message) {
+  const response = await chrome.runtime.sendMessage(message);
+  if (!response?.ok) {
+    const error = new Error(response?.error?.message || "扩展后台任务异常");
+    error.code = response?.error?.code || "SERVICE_ERROR";
+    error.hint = response?.error?.hint || "";
+    throw error;
+  }
+  return response.task;
 }
 
-function renderDuplicate(tab, existing, preferences) {
+function stageMessage(stage) {
+  return {
+    queued: "正在准备剪存...",
+    lookup: "正在检查是否已剪存...",
+    extract: "正在读取正文...",
+    submit: "正在提交后台任务...",
+    feishu: "正在写入飞书，可放心切换标签页..."
+  }[stage] || "正在后台剪存...";
+}
+
+function renderDuplicate(tab, task) {
+  const existing = task.result || {};
   const docUrl = safeLink(existing.docUrl);
   const baseUrl = safeLink(existing.baseUrl);
   resultEl.hidden = false;
@@ -198,7 +127,14 @@ function renderDuplicate(tab, existing, preferences) {
   document.getElementById("save-copy").addEventListener("click", async () => {
     clearOutput();
     try {
-      await savePage(tab, preferences);
+      const next = await sendMessage({
+        type: "FEISHU_CLIP_START",
+        tabId: tab.id,
+        url: tab.url,
+        title: tab.title,
+        forceCopy: true
+      });
+      await watchTask(tab, next);
     } catch (error) {
       showError(failureMessage(error));
       setStatus("剪存失败");
@@ -207,28 +143,42 @@ function renderDuplicate(tab, existing, preferences) {
   setStatus("已剪存过");
 }
 
+async function watchTask(tab, initialTask) {
+  let task = initialTask;
+  while (task.status === "running") {
+    titleEl.textContent = task.title || tab.title || "未命名网页";
+    urlEl.textContent = task.url || tab.url || "";
+    setStatus(stageMessage(task.stage));
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    task = await sendMessage({ type: "FEISHU_CLIP_STATUS", taskId: task.id });
+  }
+  if (task.status === "succeeded") {
+    renderSuccess(task.result || {});
+    return;
+  }
+  if (task.status === "duplicate") {
+    renderDuplicate(tab, task);
+    return;
+  }
+  const error = new Error(task.error?.message || "剪存失败");
+  error.code = task.error?.code || "SERVICE_ERROR";
+  error.hint = task.error?.hint || "";
+  throw error;
+}
+
 async function clipCurrentPage() {
   clearOutput();
   try {
     const tab = await getActiveTab();
-    const preferences = await getPreferences();
     titleEl.textContent = tab.title || "未命名网页";
     urlEl.textContent = tab.url || "";
-
-    if (preferences.duplicateBehavior === "show_existing") {
-      setStatus("正在检查是否已剪存...");
-      try {
-        const existing = await postJson("/lookup", { url: tab.url, preferences }, 8_000);
-        if (existing.exists) {
-          await markClipped(tab, tab.url).catch(() => {});
-          renderDuplicate(tab, existing, preferences);
-          return;
-        }
-      } catch (_error) {
-        // Cross-device lookup is helpful but must never block a new clip.
-      }
-    }
-    await savePage(tab, preferences);
+    const task = await sendMessage({
+      type: "FEISHU_CLIP_START",
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title
+    });
+    await watchTask(tab, task);
   } catch (error) {
     showError(failureMessage(error));
     setStatus("剪存失败");

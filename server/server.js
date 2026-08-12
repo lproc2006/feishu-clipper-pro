@@ -45,6 +45,8 @@ let syncInFlight = null;
 let ollamaModelCache = null;
 const folderListCache = new Map();
 const clipRecordCache = new Map();
+const clipJobs = new Map();
+const CLIP_JOB_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 class ClipError extends Error {
   constructor(code, message, { stage = "unknown", status = 500, hint = "", cause } = {}) {
@@ -408,6 +410,7 @@ function baseFieldsJson() {
         { name: "待整理", hue: "Red" }
       ]
     },
+    { name: "内容摘要", type: "text" },
     { name: "正文", type: "text" }
   ]);
 }
@@ -638,6 +641,27 @@ async function ensureBaseSchema(baseToken, tableId) {
     ]);
   }
 
+  if (!fields.some((field) => field.name === "内容摘要")) {
+    await runLark([
+      "base",
+      "+field-create",
+      "--base-token",
+      baseToken,
+      "--table-id",
+      tableId,
+      "--json",
+      JSON.stringify({
+        name: "内容摘要",
+        type: "text",
+        description: "仅根据清洗后的文章内容生成的100至200字完整摘要"
+      }),
+      "--as",
+      "user",
+      "--format",
+      "json"
+    ]);
+  }
+
   const views = await runLark([
     "base",
     "+view-list",
@@ -651,7 +675,16 @@ async function ensureBaseSchema(baseToken, tableId) {
     "json"
   ]);
   const viewItems = views?.data?.views || views?.views || [];
-  const visibleFields = ["标题", "发布时间", "发布单位", "原网页链接", "飞书文档链接", "标签", "正文"];
+  const visibleFields = [
+    "标题",
+    "发布时间",
+    "发布单位",
+    "原网页链接",
+    "飞书文档链接",
+    "标签",
+    "内容摘要",
+    "正文"
+  ];
   for (const view of viewItems) {
     await runLark([
       "base",
@@ -1221,38 +1254,123 @@ function inferTags(payload) {
   return tags.slice(0, MAX_TAG_COUNT);
 }
 
-function fallbackSummary(title, body, tags) {
-  const source = normalizeBlockText(body);
-  const topicText = tags.length ? tags.join("、") : "文章核心事项";
-  const safeTitle = truncate(normalizeBlockText(title), 70);
-  let materialType = "综合材料";
-  let dimensionText = "背景、核心事项、主要观点和可能影响";
-  if (/(?:通知|意见|办法|规定|方案|规划|批复|公告|条例)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
-    materialType = "政策或制度性材料";
-    dimensionText = "制定背景、适用对象、核心举措、执行安排和实施影响";
-  } else if (/(?:案例|经验|做法|成效|实践)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
-    materialType = "案例或实践材料";
-    dimensionText = "问题背景、具体做法、实施过程、实际成效和可借鉴经验";
-  } else if (/(?:研究|报告|观察|调查|评估|分析)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
-    materialType = "研究或分析材料";
-    dimensionText = "研究对象、主要观点、论证脉络、关键发现和结论启示";
-  } else if (/(?:发布|举行|启动|入选|动态|消息|新闻)/.test(`${safeTitle}\n${source.slice(0, 1200)}`)) {
-    materialType = "新闻或动态材料";
-    dimensionText = "事件背景、主要进展、参与主体、重点信息和后续影响";
+const SUMMARY_META_PATTERN = /(?:正文包含|摘要仅|摘要着重|材料的信息价值|本篇.{0,12}材料|内容主要从|阅读时应重点把握|本文主要|文章主要|材料主要|以下摘要|这篇文章|该文章|该材料)/;
+
+function summarySentences(value) {
+  const text = normalizeBlockText(value)
+    .replace(/^(?:内容)?摘要\s*[：:]\s*/u, "")
+    .replace(/[\r\n　]+/g, "")
+    .trim();
+  if (!text) return [];
+  return text.match(/[^。！？!?]+[。！？!?]/g) || [];
+}
+
+function completeSummary(value) {
+  const sentences = summarySentences(value);
+  if (!sentences.length) return "";
+  let summary = "";
+  for (const sentence of sentences) {
+    const normalized = sentence.replace(/[!?]/g, (mark) => ({ "!": "！", "?": "？" })[mark]);
+    if (summary.length + normalized.length > MAX_SUMMARY_LENGTH) break;
+    summary += normalized;
   }
-  const featureText = [
-    /\d/.test(source) ? "正文包含时间、数量或其他可核验信息，摘要仅概括其作用而不直接复制数据段落。" : "摘要着重呈现正文的主题关系和逻辑重点。",
-    /(?:应当|必须|要求|实施|推进|建立|完善)/.test(source)
-      ? "材料具有明确的行动或执行导向，需重点理解各项举措之间的衔接关系。"
-      : "材料的信息价值主要体现在对核心事项的集中说明与结构化呈现。"
-  ].join("");
-  const summary = [
-    `本篇${materialType}围绕“${safeTitle}”展开，核心主题集中在${topicText}。`,
-    `内容主要从${dimensionText}等方面进行说明，并将分散信息归纳为相互关联的要点。`,
-    featureText,
-    `整体来看，阅读时应重点把握${topicText}之间的关系，以及其对相关对象、业务场景或后续实施的实际意义。`
-  ].join("");
-  return summary.slice(0, MAX_SUMMARY_LENGTH);
+  return summary;
+}
+
+function summaryIsValid(summary, body) {
+  return (
+    summary.length >= MIN_SUMMARY_LENGTH &&
+    summary.length <= MAX_SUMMARY_LENGTH &&
+    /[。！？]$/.test(summary) &&
+    !SUMMARY_META_PATTERN.test(summary) &&
+    !summaryCopiesSource(summary, body)
+  );
+}
+
+function sourceSentences(body) {
+  return normalizeBlockText(body)
+    .replace(/[\r\n]+/g, "。")
+    .split(/[。！？!?；;]+/)
+    .map((sentence) => sentence.replace(/^\s*(?:发布时间|来源|发布单位)\s*[：:]\s*/u, "").trim())
+    .filter((sentence) => sentence.length >= 12 && sentence.length <= 180)
+    .filter((sentence) => !SUMMARY_META_PATTERN.test(sentence));
+}
+
+function compactSourceSentence(sentence) {
+  return sentence
+    .replace(/^(?:据悉|据了解|记者获悉|日前|近日|会上|其中|同时|此外|下一步)[，,]?/, "")
+    .replace(/^[^，,]{0,24}(?:表示|指出|强调)[，,]/, "")
+    .replace(/[\s　]+/g, "")
+    .trim();
+}
+
+function fallbackSummary(title, body, tags) {
+  const safeTitle = truncate(normalizeBlockText(title).replace(/[。！？!?；;]+$/g, ""), 70);
+  const keywords = [...new Set([
+    ...tags,
+    ...contentKeywordTags({ articleTitle: safeTitle }, body).slice(0, 5)
+  ])].filter(Boolean);
+  const ranked = sourceSentences(body)
+    .map((sentence, index) => ({
+      sentence: compactSourceSentence(sentence),
+      score: Math.max(0, 8 - index) + keywords.reduce((sum, keyword) => sum + (sentence.includes(keyword) ? 5 : 0), 0)
+    }))
+    .filter((item) => item.sentence.length >= 10)
+    .sort((a, b) => b.score - a.score);
+
+  const selected = [];
+  for (const item of ranked) {
+    if (selected.some((existing) => existing.includes(item.sentence) || item.sentence.includes(existing))) continue;
+    selected.push(item.sentence);
+    if (selected.length === 4) break;
+  }
+
+  const topic = keywords.slice(0, 3).join("、");
+  const lead = safeTitle
+    ? `${safeTitle.replace(/^(?:关于|国务院关于)/, "").replace(/[《》]/g, "")}聚焦${topic || "相关事项"}，`
+    : `${topic || "相关事项"}方面，`;
+  const facts = selected.map((sentence, index) => {
+    if (index === 0) return `${lead}${sentence.replace(/^(?:本文|文章|材料|该文)/, "")}`;
+    return sentence;
+  });
+  let summary = completeSummary(facts.map((sentence) => `${sentence}。`).join(""));
+
+  if (summary.length < MIN_SUMMARY_LENGTH && selected.length) {
+    const remaining = sourceSentences(body)
+      .map(compactSourceSentence)
+      .filter((sentence) => !selected.includes(sentence));
+    for (const sentence of remaining) {
+      const next = completeSummary(`${summary}${sentence}。`);
+      if (next.length > summary.length) summary = next;
+      if (summary.length >= MIN_SUMMARY_LENGTH) break;
+    }
+  }
+
+  if (summary.length < MIN_SUMMARY_LENGTH) {
+    const details = normalizeBlockText(body)
+      .split(/[，,。！？!?；;：:]+/)
+      .map(compactSourceSentence)
+      .filter((detail) => detail.length >= 4 && detail.length <= 45)
+      .filter((detail, index, all) => all.indexOf(detail) === index)
+      .slice(0, 6);
+    const groundedSentences = [
+      details.length >= 2 ? `具体安排涉及${details.join("、")}。` : "",
+      details.length >= 3
+        ? `其中，${details.slice(0, 3).join("、")}构成主要任务，${details.slice(3).join("、")}作为配套环节同步推进。`
+        : ""
+    ].filter(Boolean);
+    for (const sentence of groundedSentences) {
+      const next = completeSummary(`${summary}${sentence}`);
+      if (next.length > summary.length) summary = next;
+      if (summary.length >= MIN_SUMMARY_LENGTH) break;
+    }
+  }
+
+  if (!summary) {
+    const conciseBody = compactSourceSentence(normalizeBlockText(body));
+    summary = completeSummary(`${lead}${truncate(conciseBody, MAX_SUMMARY_LENGTH - lead.length - 1)}。`);
+  }
+  return summary;
 }
 
 function normalizeAiTag(value) {
@@ -1369,11 +1487,8 @@ function normalizeAiEnrichment(value, payload, body) {
     add(tag);
   }
   const finalTags = tags.slice(0, MAX_TAG_COUNT);
-  const candidateSummary = normalizeBlockText(value?.summary).slice(0, MAX_SUMMARY_LENGTH);
-  const aiSummaryIsValid =
-    candidateSummary.length >= MIN_SUMMARY_LENGTH &&
-    candidateSummary.length <= MAX_SUMMARY_LENGTH &&
-    !summaryCopiesSource(candidateSummary, body);
+  const candidateSummary = completeSummary(value?.summary);
+  const aiSummaryIsValid = summaryIsValid(candidateSummary, body);
   const summary = aiSummaryIsValid
     ? candidateSummary
     : fallbackSummary(normalizeTitle(payload), body, finalTags);
@@ -1411,7 +1526,8 @@ function aiPrompt(payload, body) {
   return [
     "你是中文网页归档编辑。请仅返回 JSON，不要解释。",
     "任务：根据清洗后的正文重新组织一段内容摘要，并仅从该内容提取 2 至 3 个突出核心对象、主题或关键事项的标签。",
-    "摘要要求：100 至 200 个汉字；必须使用自己的表述归纳重点；不得复制原文完整句子，不得连续照抄原文超过 20 个字；不要写‘本文主要介绍了’一类空泛开头。",
+    "摘要要求：100 至 200 个汉字，写成一个完整段落；只概括正文中的核心事实、对象、措施、进展、结果或影响，不评价摘要本身，也不补充正文没有的信息。必须使用自己的表述，不得复制原文完整句子，不得连续照抄原文超过 20 个字。",
+    "禁止出现‘正文包含’‘摘要仅’‘材料的信息价值’‘内容主要从’‘阅读时应重点把握’‘本文主要介绍了’等空泛套话。每句话都必须写完整，最后一个字符必须是句号、问号或感叹号，不得因字数限制截断半句。",
     "标签要求：必须为 2 至 3 个，每个 2 至 5 个字；只根据正文主题生成；拒绝使用‘政策、资料、工作、技术、文章、报告、研究、分析、新闻’等泛化词；不要使用网站名、发布单位或状态词作为标签。",
     '返回格式：{"summary":"...","tags":["...","..."]}',
     `标题：${normalizeTitle(payload)}`,
@@ -1569,7 +1685,7 @@ function buildClipMetadata(payload, tags, summary = "") {
     publishedAt: publication.value,
     publishedDisplay: publication.display,
     publisher,
-    summary: normalizeBlockText(summary).slice(0, MAX_SUMMARY_LENGTH)
+    summary: completeSummary(summary)
   };
 }
 
@@ -1828,7 +1944,7 @@ async function createDoc(folderToken, title, blocks, metadata) {
   return normalized;
 }
 
-async function createRecord(base, doc, title, body, metadata) {
+function buildBaseRecordPayload(doc, title, body, metadata) {
   const fields = [
     "标题",
     "发布时间",
@@ -1836,6 +1952,7 @@ async function createRecord(base, doc, title, body, metadata) {
     "原网页链接",
     "飞书文档链接",
     "标签",
+    "内容摘要",
     "正文"
   ];
   const rows = [
@@ -1846,9 +1963,15 @@ async function createRecord(base, doc, title, body, metadata) {
       metadata.sourceUrl || "",
       doc.url || "",
       metadata.tags,
+      metadata.summary,
       truncate(body, 50000)
     ]
   ];
+  return { fields, rows };
+}
+
+async function createRecord(base, doc, title, body, metadata) {
+  const recordPayload = buildBaseRecordPayload(doc, title, body, metadata);
 
   const result = await runLark([
     "base",
@@ -1858,7 +1981,7 @@ async function createRecord(base, doc, title, body, metadata) {
     "--table-id",
     base.tableId,
     "--json",
-    JSON.stringify({ fields, rows }),
+    JSON.stringify(recordPayload),
     "--as",
     "user",
     "--format",
@@ -2361,8 +2484,7 @@ async function handleClip(payload) {
   }
   let record;
   try {
-    const recordBody = metadata.summary ? `内容摘要：${metadata.summary}\n\n${body}` : body;
-    record = await createRecord(workspace.base, doc, title, recordBody, metadata);
+    record = await createRecord(workspace.base, doc, title, body, metadata);
     await registerPair({
       recordId: record.id,
       docToken: doc.token || docTokenFromUrl(doc.url),
@@ -2393,6 +2515,72 @@ async function handleClip(payload) {
       ? [`${remoteImages.failed} 张图片由飞书按原网址尝试获取`]
       : []
   };
+}
+
+function pruneClipJobs(now = Date.now()) {
+  for (const [id, job] of clipJobs) {
+    if (now - job.updatedAt > CLIP_JOB_RETENTION_MS) clipJobs.delete(id);
+  }
+}
+
+function clipJobPayload(job) {
+  return {
+    ok: true,
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      ...(job.result ? { result: job.result } : {}),
+      ...(job.error ? { error: job.error } : {})
+    }
+  };
+}
+
+function createClipJob(payload, requestedId = "") {
+  pruneClipJobs();
+  const acceptedId = /^[a-f0-9-]{36}$/i.test(requestedId) ? requestedId : "";
+  if (acceptedId && clipJobs.has(acceptedId)) return clipJobs.get(acceptedId);
+  const now = Date.now();
+  const job = {
+    id: acceptedId || randomUUID(),
+    status: "queued",
+    stage: "queued",
+    createdAt: now,
+    updatedAt: now,
+    result: null,
+    error: null
+  };
+  clipJobs.set(job.id, job);
+  queueMicrotask(async () => {
+    job.status = "running";
+    job.stage = "feishu";
+    job.updatedAt = Date.now();
+    try {
+      job.result = await handleClip(payload);
+      job.status = "succeeded";
+      job.stage = "complete";
+    } catch (error) {
+      job.status = "failed";
+      job.stage = error.stage || "unknown";
+      job.error = {
+        code: error.code || "INTERNAL_ERROR",
+        message: error.message || "剪存失败",
+        hint: error.hint || "请查看本机服务日志后重试。"
+      };
+    }
+    job.updatedAt = Date.now();
+  });
+  return job;
+}
+
+async function waitForClipJob(job, timeoutMs = 240_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (["queued", "running"].includes(job.status) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return job;
 }
 
 async function handleLookup(payload) {
@@ -2526,6 +2714,26 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/clip-jobs") {
+      const request = await readJson(req);
+      const payload = request?.payload && typeof request.payload === "object" ? request.payload : request;
+      const job = createClipJob(payload, String(request?.jobId || ""));
+      sendJson(req, res, 202, clipJobPayload(job));
+      return;
+    }
+
+    const clipJobMatch = req.method === "GET" && url.pathname.match(/^\/clip-jobs\/([a-f0-9-]+)$/i);
+    if (clipJobMatch) {
+      const job = clipJobs.get(clipJobMatch[1]);
+      if (!job) {
+        sendJson(req, res, 404, { ok: false, code: "CLIP_JOB_NOT_FOUND", error: "剪存任务不存在或已过期" });
+        return;
+      }
+      if (url.searchParams.get("wait") === "1") await waitForClipJob(job);
+      sendJson(req, res, 200, clipJobPayload(job));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/lookup") {
       const payload = await readJson(req);
       const result = await handleLookup(payload);
@@ -2574,6 +2782,7 @@ if (process.env.FEISHU_CLIPPER_NO_LISTEN !== "1") {
 
 export {
   blocksToPlainText,
+  buildBaseRecordPayload,
   buildClipMetadata,
   buildDocXml,
   cleanArticleBlocks,

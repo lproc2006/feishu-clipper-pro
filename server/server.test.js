@@ -3,6 +3,7 @@ import test from "node:test";
 
 const {
   blocksToPlainText,
+  buildBaseRecordPayload,
   buildClipMetadata,
   buildDocXml,
   cleanArticleBlocks,
@@ -106,7 +107,48 @@ test("AI fallback still returns two reviewable tags", () => {
   assert.ok(enrichment.tags.length >= 2 && enrichment.tags.length <= 3);
   assert.ok(enrichment.tags.every((tag) => tag.length <= 5));
   assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
+  assert.match(enrichment.summary, /[。！？]$/);
+  assert.doesNotMatch(enrichment.summary, /正文包含|摘要仅|材料的信息价值|内容主要从|阅读时应重点把握/);
   assert.equal(enrichment.source, "fallback");
+});
+
+test("AI summaries reject meta filler and always end at a complete sentence", () => {
+  const body = [
+    "南阳市围绕先进制造业发展完善企业服务机制，集中协调项目建设中的审批、用地和融资事项。",
+    "当地建立重点项目清单和跨部门会商机制，按照问题类型明确责任单位、办理时限和反馈方式。",
+    "相关部门同步优化线上申报流程，减少企业重复提交材料，并为重点产业链企业提供全周期服务。",
+    "新机制推动诉求受理、转办、跟踪和回访形成闭环，提升项目落地效率和企业办事体验。"
+  ].join("");
+  const filler = "正文包含时间、数量或其他可核验信息，摘要仅概括其作用而不直接复制数据段落。材料的信息价值主要体现在对核心事项的集中说明与结构化呈现。内容主要从若干方面进行说明，阅读时应重点把握相关关系。";
+  const enrichment = normalizeAiEnrichment(
+    { summary: filler, tags: ["企业服务", "项目建设"], source: "ollama" },
+    { articleTitle: "南阳完善重点项目企业服务机制", text: body },
+    body
+  );
+  assert.equal(enrichment.source, "fallback");
+  assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
+  assert.match(enrichment.summary, /[。！？]$/);
+  assert.doesNotMatch(enrichment.summary, /正文包含|摘要仅|材料的信息价值|内容主要从|阅读时应重点把握/);
+  assert.match(enrichment.summary, /企业服务|项目建设|审批|融资|跨部门|产业链/);
+});
+
+test("overlong AI summaries are trimmed only at a sentence boundary", () => {
+  const body = "地方围绕政务服务数字化升级统一办事入口，优化事项清单和跨部门数据协同，提升企业群众办事效率。";
+  const summary = [
+    "地方统一线上办事入口，并围绕高频事项重构申报流程，使企业群众能够在一个平台查询条件、提交材料和跟踪进度。",
+    "部门之间通过共享基础数据减少重复填报，同时明确事项清单、办理时限和反馈责任，推动线上线下服务标准保持一致。",
+    "后续将根据使用反馈持续调整功能，并加强服务质量监测，让数字化改革更准确地回应实际办事需求。",
+    "这一句超过两百字边界后不应留下任何残缺内容，而且不会完整进入最终结果；其后还附有大量关于技术架构、平台运行、人员培训、服务评价、数据治理和安全管理的补充说明，用来确保整个测试输入明显超过规定的字数上限。"
+  ].join("");
+  const enrichment = normalizeAiEnrichment(
+    { summary, tags: ["政务服务", "数据协同"], source: "ollama" },
+    { articleTitle: "政务服务数字化升级", text: body },
+    body
+  );
+  assert.equal(enrichment.source, "ollama");
+  assert.ok(enrichment.summary.length >= 100 && enrichment.summary.length <= 200);
+  assert.match(enrichment.summary, /[。！？]$/);
+  assert.doesNotMatch(enrichment.summary, /残缺内容/);
 });
 
 test("verbatim AI summaries are rejected and rewritten locally", () => {
@@ -241,6 +283,25 @@ test("document paragraphs use Chinese indentation while source alignment is pres
   assert.match(xml, /<p align="right">右对齐日期<\/p>/);
   assert.match(xml, /<p align="center"><latex>E = mc\^2<\/latex><\/p>/);
   assert.match(xml, /<p align="center"><img href="https:\/\/example\.com\/chart\.png"/);
+});
+
+test("Base keeps the summary in its own field and body contains body only", () => {
+  const payload = buildBaseRecordPayload(
+    { url: "https://example.feishu.cn/docx/doc1" },
+    "独立摘要字段测试",
+    "这是正文，不应带有内容摘要前缀。",
+    {
+      publishedAt: "2026-08-12 00:00:00",
+      publisher: "示例单位",
+      sourceUrl: "https://example.com/article",
+      tags: ["企业服务", "项目建设"],
+      summary: "这是单独写入内容摘要字段的完整摘要。"
+    }
+  );
+  const summaryIndex = payload.fields.indexOf("内容摘要");
+  const bodyIndex = payload.fields.indexOf("正文");
+  assert.equal(payload.rows[0][summaryIndex], "这是单独写入内容摘要字段的完整摘要。");
+  assert.equal(payload.rows[0][bodyIndex], "这是正文，不应带有内容摘要前缀。");
 });
 
 test("browser-captured images are staged locally for protected source sites", () => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.6 - 2026-08-12
+
+- Rejects generic summary commentary and preserves only article-grounded key points in a complete 100–200 character paragraph.
+- Trims generated summaries only at sentence boundaries so saved text never ends mid-sentence.
+- Moves clipping into persistent browser and local-service jobs so switching tabs or closing the popup does not interrupt an accepted task.
+- Adds a standalone `内容摘要` Base field and keeps `正文` free of summary text.
+
 ## 1.1.5 - 2026-07-30
 
 - Keeps Drive folders hidden and makes no folder-list request until the user clicks “选择保存文件夹”.
